@@ -28,14 +28,59 @@ uv run python -m slsk_mcp.server
 
 ## MCP Integration
 
-Add to your MCP config (e.g. Windsurf global settings or `~/.cursor/mcp.json`):
+Add to your MCP config (e.g. Windsurf global settings or `~/.cursor/mcp.json`).
+
+### Option A — Install from GitHub (no clone needed)
+
+```json
+{
+  "mcpServers": {
+    "slsk": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/voidtype/slsk_mcp.git", "slsk-mcp"],
+      "env": {
+        "SLSK_USERNAME": "your_username",
+        "SLSK_PASSWORD": "your_password",
+        "SLSK_DOWNLOAD_DIR": "/home/you/music"
+      }
+    }
+  }
+}
+```
+
+### Option B — Local clone
+
+```bash
+git clone https://github.com/voidtype/slsk_mcp.git
+```
 
 ```json
 {
   "mcpServers": {
     "slsk": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/slsk-mcp", "python", "-m", "slsk_mcp.server"],
+      "args": ["run", "--directory", "/path/to/slsk_mcp", "slsk-mcp"],
+      "env": {
+        "SLSK_USERNAME": "your_username",
+        "SLSK_PASSWORD": "your_password",
+        "SLSK_DOWNLOAD_DIR": "/home/you/music"
+      }
+    }
+  }
+}
+```
+
+### Option C — pip install from GitHub
+
+```bash
+pip install git+https://github.com/voidtype/slsk_mcp.git
+```
+
+```json
+{
+  "mcpServers": {
+    "slsk": {
+      "command": "slsk-mcp",
       "env": {
         "SLSK_USERNAME": "your_username",
         "SLSK_PASSWORD": "your_password",
