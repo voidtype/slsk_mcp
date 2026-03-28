@@ -74,12 +74,13 @@ def _get_client(ctx: Context) -> SoulseekWrapper:
     return ctx.request_context.lifespan_context.client
 
 
-def _require_auth(client: SoulseekWrapper) -> Optional[dict]:
-    """Return an error dict if not connected, else None."""
-    if not client.connected:
+async def _require_auth(client: SoulseekWrapper) -> Optional[dict]:
+    """Wait for auto-login, retry from env vars, or return error."""
+    err_msg = await client.ensure_connected()
+    if err_msg:
         return ErrorResponse(
             code="not_authenticated",
-            message="Not authenticated. Call login first.",
+            message=err_msg,
         ).model_dump()
     return None
 
@@ -125,7 +126,7 @@ async def search(
 ) -> dict:
     """Search the Soulseek network for files."""
     client = _get_client(ctx)
-    err = _require_auth(client)
+    err = await _require_auth(client)
     if err:
         return err
 
@@ -153,7 +154,7 @@ async def search(
 async def download(id: str, ctx: Context, output_dir: Optional[str] = None) -> dict:
     """Download a file from a Soulseek peer."""
     client = _get_client(ctx)
-    err = _require_auth(client)
+    err = await _require_auth(client)
     if err:
         return err
 
@@ -180,7 +181,7 @@ async def download(id: str, ctx: Context, output_dir: Optional[str] = None) -> d
 async def download_status(id: str, ctx: Context) -> dict:
     """Poll progress of an active or recent download."""
     client = _get_client(ctx)
-    err = _require_auth(client)
+    err = await _require_auth(client)
     if err:
         return err
 
@@ -191,7 +192,7 @@ async def download_status(id: str, ctx: Context) -> dict:
 async def cancel_download(id: str, ctx: Context) -> dict:
     """Abort an in-progress download."""
     client = _get_client(ctx)
-    err = _require_auth(client)
+    err = await _require_auth(client)
     if err:
         return err
 

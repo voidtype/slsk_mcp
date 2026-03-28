@@ -105,6 +105,13 @@ class SoulseekWrapper:
 
         self._max_concurrent_dl = int(os.environ.get("SLSK_MAX_CONCURRENT_DL", "3"))
 
+        # Auto-login gate: tools await this before checking auth
+        self._login_event: asyncio.Event = asyncio.Event()
+        self._auto_login_started: bool = False
+        # If no auto-login will happen, mark ready immediately
+        if not (os.environ.get("SLSK_USERNAME") and os.environ.get("SLSK_PASSWORD")):
+            self._login_event.set()
+
     # ── Properties ───────────────────────────────────────────────────────
 
     @property
@@ -141,7 +148,7 @@ class SoulseekWrapper:
             settings.network.listening.obfuscated_port = obfuscated_port
 
         download_dir = os.environ.get("SLSK_DOWNLOAD_DIR", "./downloads")
-        settings.transfers.download.directory = download_dir
+        settings.shares.download = download_dir
 
         self._client = SoulSeekClient(settings)
         self._passive_mode = False
@@ -172,6 +179,7 @@ class SoulseekWrapper:
         self._connected = True
         self._username = username
         self._download_sem = asyncio.Semaphore(self._max_concurrent_dl)
+        self._login_event.set()
         return True, "Logged in successfully", self._passive_mode
 
     async def logout(self) -> None:
@@ -184,6 +192,32 @@ class SoulseekWrapper:
             self._client = None
         self._connected = False
         self._username = None
+
+    async def ensure_connected(self) -> Optional[str]:
+        """Block until auto-login completes, or auto-login from env vars.
+
+        Returns None if connected, or an error message string.
+        """
+        # Wait for any in-flight auto-login to finish
+        await self._login_event.wait()
+
+        if self._connected:
+            return None
+
+        # Try auto-login from env vars if not yet connected
+        username = os.environ.get("SLSK_USERNAME")
+        password = os.environ.get("SLSK_PASSWORD")
+        if username and password:
+            self._login_event.clear()
+            try:
+                ok, msg, _ = await self.login(username, password)
+                if ok:
+                    return None
+                return msg
+            finally:
+                self._login_event.set()
+
+        return "Not authenticated. Call login first."
 
     # ── Search ───────────────────────────────────────────────────────────
 
