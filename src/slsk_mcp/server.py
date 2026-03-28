@@ -57,9 +57,27 @@ mcp = FastMCP("slsk", lifespan=app_lifespan)
 
 
 async def _require_auth() -> Optional[dict]:
-    """Check connection state. No destructive retry — just reports status."""
+    """Check connection; auto-reconnect from env vars if needed.
+
+    Safe because login() is idempotent — skips teardown if already connected.
+    """
     if _client.connected:
         return None
+
+    # Auto-reconnect from env vars (covers: server persists across conversations,
+    # previous conversation called logout, connection dropped, etc.)
+    username = os.environ.get("SLSK_USERNAME")
+    password = os.environ.get("SLSK_PASSWORD")
+    if username and password:
+        logger.info("_require_auth: not connected, auto-reconnecting from env vars")
+        try:
+            ok, msg, _ = await _client.login(username, password)
+            if ok:
+                return None
+            logger.error("_require_auth: reconnect failed: %s", msg)
+        except Exception as exc:
+            logger.error("_require_auth: reconnect error: %s", exc)
+
     return ErrorResponse(
         code="not_authenticated",
         message="Not authenticated. Call login first or set SLSK_USERNAME/SLSK_PASSWORD env vars.",
