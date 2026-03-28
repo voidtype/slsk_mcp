@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -42,29 +41,24 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     """Manage the Soulseek client lifecycle."""
     global _client
 
-    # Auto-login if env vars are set
+    # Block on auto-login so server is ready before accepting tool calls
     username = os.environ.get("SLSK_USERNAME")
     password = os.environ.get("SLSK_PASSWORD")
     if username and password:
         logger.info("Auto-login with SLSK_USERNAME=%s", username)
-        asyncio.get_event_loop().create_task(_auto_login(_client, username, password))
+        try:
+            ok, msg, passive = await _client.login(username, password)
+            if ok:
+                logger.info("Auto-login succeeded (passive=%s)", passive)
+            else:
+                logger.error("Auto-login failed: %s", msg)
+        except Exception as exc:
+            logger.error("Auto-login error: %s", exc)
 
     try:
         yield AppContext(client=_client)
     finally:
         await _client.logout()
-
-
-async def _auto_login(client: SoulseekWrapper, username: str, password: str) -> None:
-    """Fire-and-forget auto-login from env vars."""
-    try:
-        ok, msg, passive = await client.login(username, password)
-        if ok:
-            logger.info("Auto-login succeeded (passive=%s)", passive)
-        else:
-            logger.error("Auto-login failed: %s", msg)
-    except Exception as exc:
-        logger.error("Auto-login error: %s", exc)
 
 
 mcp = FastMCP("slsk", lifespan=app_lifespan)

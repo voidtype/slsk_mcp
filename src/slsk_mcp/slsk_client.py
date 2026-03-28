@@ -174,6 +174,7 @@ class SoulseekWrapper:
                 self._passive_mode = True
             except Exception as exc2:
                 self._client = None
+                self._login_event.set()
                 return False, f"Login failed: {exc2}", False
 
         self._connected = True
@@ -235,10 +236,12 @@ class SoulseekWrapper:
             timeout = int(os.environ.get("SLSK_SEARCH_TIMEOUT", "7"))
         timeout = max(timeout, 7)  # enforce floor
 
+        logger.info("Starting search query=%r timeout=%d", query, timeout)
         async with self._search_sem:
             request: SlskSearchRequest = await self._client.searches.search(query)
             await asyncio.sleep(timeout)
 
+        logger.info("Search complete: %d raw results for query=%r", len(request.results), query)
         items: List[SearchResultItem] = []
         for result in request.results:
             username = result.username
