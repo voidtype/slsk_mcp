@@ -106,14 +106,15 @@ class SoulseekWrapper:
 
         # Connection mutex — prevents concurrent login stomps
         self._conn_lock = asyncio.Lock()
-        # Operation lock — serializes requests to the Soulseek socket
-        self._op_lock = asyncio.Lock()
+        # Socket-level concurrency: how many operations may hit the wire at once
+        _max_ops = int(os.environ.get("SLSK_MAX_CONCURRENT_OPS", "1"))
+        self._op_lock = asyncio.Semaphore(_max_ops)
 
         # Concurrency controls
         self._download_sem: Optional[asyncio.Semaphore] = None
-        self._search_sem = asyncio.Semaphore(4)
-
         self._max_concurrent_dl = int(os.environ.get("SLSK_MAX_CONCURRENT_DL", "3"))
+        _max_search = int(os.environ.get("SLSK_MAX_CONCURRENT_SEARCH", "4"))
+        self._search_sem = asyncio.Semaphore(_max_search)
 
     # ── Properties ───────────────────────────────────────────────────────
 
