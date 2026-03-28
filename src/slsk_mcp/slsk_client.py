@@ -90,14 +90,24 @@ def _extract_attrs(attributes: Any) -> Dict[str, Optional[int]]:
 class SoulseekWrapper:
     """Thin wrapper around aioslsk providing the operations the MCP server needs."""
 
+    # Max retries on session drop before returning an error
+    _MAX_RETRIES = 1
+    _RETRY_BACKOFF = 2.0  # seconds
+
     def __init__(self) -> None:
         self._client: Optional[SoulSeekClient] = None
         self._connected: bool = False
         self._passive_mode: bool = False
         self._username: Optional[str] = None
+        self._password: Optional[str] = None
 
         # id → {transfer, local_path, filesize, finished_at}
         self._downloads: Dict[str, Dict[str, Any]] = {}
+
+        # Connection mutex — prevents concurrent login stomps
+        self._conn_lock = asyncio.Lock()
+        # Operation lock — serializes requests to the Soulseek socket
+        self._op_lock = asyncio.Lock()
 
         # Concurrency controls
         self._download_sem: Optional[asyncio.Semaphore] = None
@@ -122,7 +132,15 @@ class SoulseekWrapper:
     # ── Login / Logout ───────────────────────────────────────────────────
 
     async def login(self, username: str, password: str) -> Tuple[bool, str, bool]:
-        """Connect and authenticate. Returns (success, message, passive_mode)."""
+        """Connect and authenticate. Returns (success, message, passive_mode).
+
+        Thread-safe: uses _conn_lock so concurrent callers queue instead of
+        stomping each other's connections.
+        """
+        async with self._conn_lock:
+            return await self._login_inner(username, password)
+
+    async def _login_inner(self, username: str, password: str) -> Tuple[bool, str, bool]:
         # If already connected with same creds, return immediately
         if self._connected and self._username == username:
             logger.info("Already connected as %s, skipping re-login", username)
@@ -168,6 +186,7 @@ class SoulseekWrapper:
         self._passive_mode = not self._has_listening_ports()
         self._connected = True
         self._username = username
+        self._password = password
         self._download_sem = asyncio.Semaphore(self._max_concurrent_dl)
         logger.info("Login complete (passive=%s)", self._passive_mode)
         return True, "Logged in successfully", self._passive_mode
@@ -191,6 +210,25 @@ class SoulseekWrapper:
             self._client = None
         self._connected = False
         self._username = None
+        self._password = None
+
+    async def reconnect(self) -> bool:
+        """Attempt to re-establish the session from stored credentials.
+
+        Returns True if reconnect succeeded.
+        """
+        if not self._username or not self._password:
+            return False
+        user, pw = self._username, self._password
+        logger.info("Reconnecting as %s (backoff=%.1fs)", user, self._RETRY_BACKOFF)
+        await asyncio.sleep(self._RETRY_BACKOFF)
+        # logout clears _username/_password, so capture first
+        ok, msg, _ = await self.login(user, pw)
+        if ok:
+            logger.info("Reconnect succeeded")
+        else:
+            logger.error("Reconnect failed: %s", msg)
+        return ok
 
     # ── Search ───────────────────────────────────────────────────────────
 
@@ -209,9 +247,10 @@ class SoulseekWrapper:
         timeout = max(timeout, 7)  # enforce floor
 
         logger.info("Starting search query=%r timeout=%d", query, timeout)
-        async with self._search_sem:
-            request: SlskSearchRequest = await self._client.searches.search(query)
-            await asyncio.sleep(timeout)
+        async with self._op_lock:
+            async with self._search_sem:
+                request: SlskSearchRequest = await self._client.searches.search(query)
+                await asyncio.sleep(timeout)
 
         logger.info("Search complete: %d raw results for query=%r", len(request.results), query)
         items: List[SearchResultItem] = []
@@ -270,9 +309,10 @@ class SoulseekWrapper:
         try:
             assert self._download_sem is not None
             await self._download_sem.acquire()
-            transfer: Transfer = await self._client.transfers.download(
-                username, remote_path
-            )
+            async with self._op_lock:
+                transfer: Transfer = await self._client.transfers.download(
+                    username, remote_path
+                )
             self._downloads[file_id] = {
                 "transfer": transfer,
                 "local_path": str(local_file),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -24,23 +25,42 @@ logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 
 # ── Singleton client ─────────────────────────────────────────────────────────
 _W = SoulseekWrapper()
+_connect_lock = asyncio.Lock()
 
 
 async def _connect() -> None:
-    """Ensure the singleton is connected. Idempotent — safe to call many times."""
-    if _W.connected:
-        return
+    """Ensure the singleton is connected. Serialized via lock so parallel tool
+    calls queue on connect instead of fighting over the port."""
+    async with _connect_lock:
+        if _W.connected:
+            return
 
-    username = os.environ.get("SLSK_USERNAME", "")
-    password = os.environ.get("SLSK_PASSWORD", "")
-    if not username or not password:
-        raise RuntimeError("SLSK_USERNAME and SLSK_PASSWORD env vars are required")
+        username = os.environ.get("SLSK_USERNAME", "")
+        password = os.environ.get("SLSK_PASSWORD", "")
+        if not username or not password:
+            raise RuntimeError("SLSK_USERNAME and SLSK_PASSWORD env vars are required")
 
-    logger.info("_connect: logging in as %s", username)
-    ok, msg, passive = await _W.login(username, password)
-    if not ok:
-        raise RuntimeError(f"Login failed: {msg}")
-    logger.info("_connect: ok (passive=%s)", passive)
+        logger.info("_connect: logging in as %s", username)
+        ok, msg, passive = await _W.login(username, password)
+        if not ok:
+            raise RuntimeError(f"Login failed: {msg}")
+        logger.info("_connect: ok (passive=%s)", passive)
+
+
+async def _with_retry(coro_factory):
+    """Run an async operation; on failure, reconnect once and retry.
+
+    coro_factory is a zero-arg callable that returns a new coroutine each call.
+    """
+    try:
+        return await coro_factory()
+    except Exception as first_err:
+        logger.warning("Operation failed (%s), attempting reconnect…", first_err)
+        if await _W.reconnect():
+            return await coro_factory()
+        raise RuntimeError(
+            f"Session lost and reconnect failed. Original error: {first_err}"
+        ) from first_err
 
 
 # ── MCP server (no lifespan) ─────────────────────────────────────────────────
@@ -67,12 +87,12 @@ async def search(
         timeout = 7
 
     try:
-        results = await _W.search(
+        results = await _with_retry(lambda: _W.search(
             query=query,
             timeout=timeout,
             extensions=extensions,
             max_results=max_results,
-        )
+        ))
         return SearchResponse(count=len(results), results=results).model_dump()
     except Exception as exc:
         return ErrorResponse(code="network_error", message=str(exc)).model_dump()
@@ -87,7 +107,9 @@ async def download(id: str, output_dir: Optional[str] = None) -> dict:
         return ErrorResponse(code="not_authenticated", message=str(exc)).model_dump()
 
     try:
-        ok, message, local_path, filesize = await _W.download(id, output_dir)
+        ok, message, local_path, filesize = await _with_retry(
+            lambda: _W.download(id, output_dir)
+        )
         if ok:
             return DownloadResponse(
                 status="started",
