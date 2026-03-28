@@ -57,27 +57,12 @@ mcp = FastMCP("slsk", lifespan=app_lifespan)
 
 
 async def _require_auth() -> Optional[dict]:
-    """Check connection. If down, try once to re-login from env vars."""
-    logger.info("_require_auth: connected=%s id=%s", _client.connected, id(_client))
+    """Check connection state. No destructive retry — just reports status."""
     if _client.connected:
         return None
-
-    # One retry from env vars
-    username = os.environ.get("SLSK_USERNAME")
-    password = os.environ.get("SLSK_PASSWORD")
-    if username and password:
-        logger.info("_require_auth: attempting re-login")
-        try:
-            ok, msg, _ = await _client.login(username, password)
-            if ok:
-                return None
-            return ErrorResponse(code="not_authenticated", message=msg).model_dump()
-        except Exception as exc:
-            return ErrorResponse(code="not_authenticated", message=str(exc)).model_dump()
-
     return ErrorResponse(
         code="not_authenticated",
-        message="Not authenticated. Call login first.",
+        message="Not authenticated. Call login first or set SLSK_USERNAME/SLSK_PASSWORD env vars.",
     ).model_dump()
 
 

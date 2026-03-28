@@ -123,6 +123,11 @@ class SoulseekWrapper:
 
     async def login(self, username: str, password: str) -> Tuple[bool, str, bool]:
         """Connect and authenticate. Returns (success, message, passive_mode)."""
+        # If already connected with same creds, return immediately
+        if self._connected and self._username == username:
+            logger.info("Already connected as %s, skipping re-login", username)
+            return True, "Already connected", self._passive_mode
+
         # Tear down any existing session
         await self.logout()
 
