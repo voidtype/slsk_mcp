@@ -142,6 +142,8 @@ class SoulseekWrapper:
                 password=password,
             ),
         )
+        # Always use CLEAR mode so port-bind failures are ignored (passive mode)
+        settings.network.listening.error_mode = ListeningConnectionErrorMode.CLEAR
         if listen_port:
             settings.network.listening.port = listen_port
         if obfuscated_port:
@@ -151,37 +153,37 @@ class SoulseekWrapper:
         settings.shares.download = download_dir
 
         self._client = SoulSeekClient(settings)
-        self._passive_mode = False
 
         try:
             await self._client.start()
             await self._client.login()
         except Exception as exc:
-            # Passive-mode fallback: retry without listening ports
-            logger.warning("Direct connect failed (%s), retrying passive mode", exc)
+            logger.error("Login failed: %s", exc)
             try:
                 await self._client.stop()
             except Exception:
                 pass
+            self._client = None
+            self._login_event.set()
+            return False, f"Login failed: {exc}", False
 
-            try:
-                settings.network.listening.port = 0
-                settings.network.listening.obfuscated_port = 0
-                settings.network.listening.error_mode = ListeningConnectionErrorMode.CLEAR
-                self._client = SoulSeekClient(settings)
-                await self._client.start()
-                await self._client.login()
-                self._passive_mode = True
-            except Exception as exc2:
-                self._client = None
-                self._login_event.set()
-                return False, f"Login failed: {exc2}", False
-
+        # Detect passive mode: if no listening ports were bound
+        self._passive_mode = not self._has_listening_ports()
         self._connected = True
         self._username = username
         self._download_sem = asyncio.Semaphore(self._max_concurrent_dl)
         self._login_event.set()
+        logger.info("Login complete (passive=%s)", self._passive_mode)
         return True, "Logged in successfully", self._passive_mode
+
+    def _has_listening_ports(self) -> bool:
+        """Check if the client has active listening connections."""
+        try:
+            network = self._client._network  # type: ignore[union-attr]
+            listeners = getattr(network, "listening_connections", [])
+            return len(listeners) > 0
+        except Exception:
+            return False
 
     async def logout(self) -> None:
         """Disconnect from Soulseek."""
@@ -199,8 +201,12 @@ class SoulseekWrapper:
 
         Returns None if connected, or an error message string.
         """
-        # Wait for any in-flight auto-login to finish
-        await self._login_event.wait()
+        # Wait for any in-flight login to finish (with timeout to avoid deadlock)
+        try:
+            await asyncio.wait_for(self._login_event.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            self._login_event.set()
+            return "Login timed out"
 
         if self._connected:
             return None
