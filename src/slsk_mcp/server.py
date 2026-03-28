@@ -7,17 +7,15 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import Optional
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import FastMCP
 
 from .models import (
     ErrorResponse,
     LoginResponse,
     LogoutResponse,
     SearchResponse,
-    SearchResultItem,
     DownloadResponse,
     DownloadStatusResponse,
     CancelDownloadResponse,
@@ -27,20 +25,13 @@ from .slsk_client import SoulseekWrapper
 logger = logging.getLogger("slsk_mcp")
 logging.basicConfig(level=logging.INFO)
 
-# Module-level client so both tools (via ctx) and resources can access it
+# Single module-level client — used directly by ALL tools and resources
 _client = SoulseekWrapper()
 
 
-@dataclass
-class AppContext:
-    client: SoulseekWrapper
-
-
 @asynccontextmanager
-async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
+async def app_lifespan(server: FastMCP) -> AsyncIterator[None]:
     """Manage the Soulseek client lifecycle."""
-    global _client
-
     # Block on auto-login so server is ready before accepting tool calls
     username = os.environ.get("SLSK_USERNAME")
     password = os.environ.get("SLSK_PASSWORD")
@@ -55,8 +46,9 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
         except Exception as exc:
             logger.error("Auto-login error: %s", exc)
 
+    logger.info("Lifespan ready: _client.connected=%s id=%s", _client.connected, id(_client))
     try:
-        yield AppContext(client=_client)
+        yield
     finally:
         await _client.logout()
 
@@ -64,30 +56,39 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
 mcp = FastMCP("slsk", lifespan=app_lifespan)
 
 
-def _get_client(ctx: Context) -> SoulseekWrapper:
-    return ctx.request_context.lifespan_context.client
+async def _require_auth() -> Optional[dict]:
+    """Check connection. If down, try once to re-login from env vars."""
+    logger.info("_require_auth: connected=%s id=%s", _client.connected, id(_client))
+    if _client.connected:
+        return None
 
+    # One retry from env vars
+    username = os.environ.get("SLSK_USERNAME")
+    password = os.environ.get("SLSK_PASSWORD")
+    if username and password:
+        logger.info("_require_auth: attempting re-login")
+        try:
+            ok, msg, _ = await _client.login(username, password)
+            if ok:
+                return None
+            return ErrorResponse(code="not_authenticated", message=msg).model_dump()
+        except Exception as exc:
+            return ErrorResponse(code="not_authenticated", message=str(exc)).model_dump()
 
-async def _require_auth(client: SoulseekWrapper) -> Optional[dict]:
-    """Wait for auto-login, retry from env vars, or return error."""
-    err_msg = await client.ensure_connected()
-    if err_msg:
-        return ErrorResponse(
-            code="not_authenticated",
-            message=err_msg,
-        ).model_dump()
-    return None
+    return ErrorResponse(
+        code="not_authenticated",
+        message="Not authenticated. Call login first.",
+    ).model_dump()
 
 
 # ── Tools ────────────────────────────────────────────────────────────────────
 
 
 @mcp.tool()
-async def login(username: str, password: str, ctx: Context) -> dict:
+async def login(username: str, password: str) -> dict:
     """Authenticate to the Soulseek network."""
-    client = _get_client(ctx)
     try:
-        ok, message, passive = await client.login(username, password)
+        ok, message, passive = await _client.login(username, password)
         if ok:
             return LoginResponse(
                 status="ok", message=message, passive_mode=passive
@@ -103,24 +104,21 @@ async def login(username: str, password: str, ctx: Context) -> dict:
 
 
 @mcp.tool()
-async def logout(ctx: Context) -> dict:
+async def logout() -> dict:
     """Disconnect from Soulseek. No parameters."""
-    client = _get_client(ctx)
-    await client.logout()
+    await _client.logout()
     return LogoutResponse(status="ok").model_dump()
 
 
 @mcp.tool()
 async def search(
     query: str,
-    ctx: Context,
     timeout: int = 7,
     extensions: Optional[list[str]] = None,
     max_results: int = 50,
 ) -> dict:
     """Search the Soulseek network for files."""
-    client = _get_client(ctx)
-    err = await _require_auth(client)
+    err = await _require_auth()
     if err:
         return err
 
@@ -128,7 +126,7 @@ async def search(
         timeout = 7
 
     try:
-        results = await client.search(
+        results = await _client.search(
             query=query,
             timeout=timeout,
             extensions=extensions,
@@ -145,15 +143,14 @@ async def search(
 
 
 @mcp.tool()
-async def download(id: str, ctx: Context, output_dir: Optional[str] = None) -> dict:
+async def download(id: str, output_dir: Optional[str] = None) -> dict:
     """Download a file from a Soulseek peer."""
-    client = _get_client(ctx)
-    err = await _require_auth(client)
+    err = await _require_auth()
     if err:
         return err
 
     try:
-        ok, message, local_path, filesize = await client.download(id, output_dir)
+        ok, message, local_path, filesize = await _client.download(id, output_dir)
         if ok:
             return DownloadResponse(
                 status="started",
@@ -172,25 +169,23 @@ async def download(id: str, ctx: Context, output_dir: Optional[str] = None) -> d
 
 
 @mcp.tool()
-async def download_status(id: str, ctx: Context) -> dict:
+async def download_status(id: str) -> dict:
     """Poll progress of an active or recent download."""
-    client = _get_client(ctx)
-    err = await _require_auth(client)
+    err = await _require_auth()
     if err:
         return err
 
-    return client.download_status(id).model_dump()
+    return _client.download_status(id).model_dump()
 
 
 @mcp.tool()
-async def cancel_download(id: str, ctx: Context) -> dict:
+async def cancel_download(id: str) -> dict:
     """Abort an in-progress download."""
-    client = _get_client(ctx)
-    err = await _require_auth(client)
+    err = await _require_auth()
     if err:
         return err
 
-    status = await client.cancel_download(id)
+    status = await _client.cancel_download(id)
     return CancelDownloadResponse(status=status).model_dump()
 
 
