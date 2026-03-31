@@ -112,37 +112,51 @@ pip install git+https://github.com/voidtype/slsk_mcp.git
 
 ## Tips & Tricks
 
-Soulseek is a peer-to-peer network — there is no central file server. Every file lives on someone else's computer. These tips (drawn from how clients like Nicotine+, SoulseekQt, and Museek operate) will help you get reliable results.
+Soulseek is a peer-to-peer network — every file lives on someone else's machine. These strategies are drawn from how [Nicotine+](https://nicotine-plus.org/), [sldl](https://github.com/fiso64/sldl), [Soularr](https://github.com/mrusse/soularr), and [SoulSync](https://github.com/Nezreka/SoulSync) handle search and download.
 
-### Searching
+### Search Query Craft
 
-- **Be specific with queries.** `"Aphex Twin Drukqs flac"` will return far better results than `"electronic music"`. Include the artist, album, and format when you know them.
-- **Use the `extensions` filter.** Pass `extensions: ["flac", "mp3"]` to skip unrelated file types (images, playlists, NFO files) that clutter results.
-- **Increase `timeout` for rare content.** The default 7 seconds is fine for popular music but niche or obscure files need 15–30 seconds for peers to respond.
-- **Search results are a snapshot.** They reflect who was online during that timeout window. If you don't find something, try again later — different peers will be online.
-- **Look at `has_free_slots` first.** Results are sorted with free-slot peers on top. A peer with `has_free_slots: true` and high `avg_speed` is your best bet for an immediate download.
+Soulseek search works by tokenizing your query and matching against every shared filename and folder path on connected peers. The server-side algorithm is a simple word-intersection: **every word you send must appear somewhere in the file's path** for it to match.
 
-### Choosing Peers
+- **Provide the least input that uniquely identifies the file.** `"Miles Davis Kind of Blue flac"` is better than `"jazz trumpet classic album"`. Include artist + album + format when known. ([sldl docs: "always best to provide the least input necessary to uniquely identify an album or song"](https://github.com/fiso64/sldl#tips))
+- **Exclude junk with `-` (minus).** Nicotine+ supports `flac -live` to exclude live recordings, or `jazz -compilation` to skip compilations. The Soulseek protocol supports excluded terms — use them to cut noise. ([Nicotine+ search syntax docs](https://www.mintlify.com/nicotine-plus/nicotine-plus/features/search))
+- **Use `extensions: ["flac"]` or `extensions: ["mp3"]`** to filter at the MCP level. This is equivalent to Nicotine+'s file-type filter and Soularr's `allowed_filetypes` setting — it drops images, `.nfo`, `.txt`, `.m3u` and other non-audio clutter before results reach the agent.
+- **Drop "feat." and featured artists from queries.** Tools like sldl strip these with `--remove-ft` because featured artist credits vary wildly across file names and cause missed matches.
+- **For "Various Artists" compilations, search by track name, not artist.** The artist field on compilations is unreliable. sldl recommends removing the artist entirely for VA releases.
+- **Partial matching with `*` works only at the start of a word** in Nicotine+. `*trance` matches "psytrance" but `remix*` does not work. Keep this in mind if searches seem to miss results.
 
-- **Use `peer_status` before downloading.** Just because a peer appeared in search results doesn't mean they're still online or accepting transfers. Check `peer_status(username)` first.
-- **Prefer peers with free upload slots.** `has_slots_free: true` means they can start sending immediately. `false` means you'll sit in their queue — sometimes for hours.
-- **Check `queue_size`.** A peer with 200 files queued will take much longer to get to yours than one with 2.
-- **Higher `avg_speed` ≠ faster for you.** Speed depends on the slowest link between you and the peer. But it's still a useful tiebreaker.
-- **Try multiple peers for the same file.** If one is slow or stuck at 0%, cancel and grab it from someone else. The same file is usually shared by dozens of users.
+### Timeout & Timing
 
-### Downloading
+- **7 seconds is the minimum, not the ideal.** For popular music 7–10s is fine. For rare/obscure content, use 15–30s. sldl's `--fast-search` mode exits early when a good match is found, but for broad discovery you want a longer window.
+- **Search results are a snapshot of who's online right now.** Different peers are online at different times of day. Nicotine+'s wishlist feature re-runs searches every 90–120 minutes for this reason. If you don't find something, try again later.
+- **Peak hours yield more results.** The Nicotine+ docs note that searching during peak hours (evenings in the US/EU) means more peers online and more results. Off-peak searches for niche content may come back empty.
 
-- **Stuck at "queued" 0%?** The peer is online but hasn't gotten to your request yet (or can't connect to you). Wait a few minutes, then cancel and pick another peer.
-- **Passive mode is normal.** If you're behind a NAT/firewall, the server falls back to passive mode. Downloads still work but are initiated differently — some very old clients may not support it.
-- **Download from folders, not just singles.** On Soulseek, albums are typically shared as full folders. If you're grabbing a full album, look for files from the same user with the same parent directory.
-- **Respect the network.** Share files back when you can. Soulseek is a community — users who only leech often get deprioritized in other users' queues.
+### Choosing Peers (the key to avoiding "stuck at queued")
+
+This is the single most important part. A file appearing in search results **does not mean the peer will serve it to you**. Tools like Soularr and SoulSync score peers before downloading.
+
+- **`has_free_slots: true` is the #1 signal.** Nicotine+ lets you filter results to only show users with free upload slots. If `has_free_slots` is `false`, you'll sit in their queue — potentially for hours. Our search results are pre-sorted with free-slot peers on top.
+- **Check `queue_size`.** Soularr rejects peers with queue sizes above a threshold (`maximum_peer_queue = 50` by default). A peer with 200 files queued will take much longer to get to yours than one with 5.
+- **Check `avg_speed`.** Soularr sets a `minimum_peer_upload_speed` floor. But remember: your actual download speed is the **slowest link** between you and the peer ([WikiHow Soulseek guide](https://www.wikihow.com/Optimize-Soulseek-for-Downloading-Music)). A peer with 10MB/s avg speed behind a congested route may still be slow for you. Use speed as a tiebreaker, not a guarantee.
+- **Use `peer_status` before committing.** The peer was online during search but may have gone offline since. `peer_status(username)` queries their current state from the server — check for `status: "online"` and `has_slots_free: true` before downloading.
+- **For full albums, pick one peer for all tracks.** SoulSync calls this "source reuse for album consistency" — downloading an entire album from the same user ensures consistent encoding, tagging, and folder structure rather than getting a Frankenstein album from 12 different rippers.
+- **Some peers can't connect to you (and vice versa).** If you're behind NAT and so is the peer, neither side can initiate a direct connection. This is the most common cause of permanent "queued" with no position number. The only fix is to try a different peer.
+
+### Downloading Strategies
+
+- **Stuck at "queued" with no queue position?** This almost always means a connectivity issue — the peer can't reach you, or you can't reach them. Cancel and try the next peer sharing the same file. ([r/Soulseek: common advice across dozens of "stuck at queued" threads](https://www.reddit.com/r/Soulseek/))
+- **Set a stale timeout.** Soularr uses `stalled_timeout = 3600` (1 hour) to abort downloads that aren't progressing. sldl uses `--max-stale-time 30` for faster iteration. If a download hasn't moved in a few minutes, cancel and try another source.
+- **Don't be afraid to cancel and retry from a different peer.** The same file is usually shared by dozens of users. Canceling a stalled download and picking the next result is the standard workflow in every Soulseek client.
+- **For quality, prefer FLAC but accept fallbacks.** sldl's default strategy is to *prefer* lossless (`pref-format = flac,wav`) but still accept lossy if lossless isn't available, with a minimum bitrate preference of 200 kbps. This avoids getting stuck hunting for a FLAC that doesn't exist on the network.
+- **Beware missing metadata from some clients.** sldl notes that the standard SoulseekQt client does not broadcast bitrate info — files from those peers will show `null` for bitrate/sample_rate. Don't reject files solely because metadata is missing; it may still be high quality.
+- **Passive mode is normal.** If you're behind NAT without port forwarding, the server falls back to passive mode. Downloads still work but are relay-negotiated. Some very old clients may not support it. UPnP can help if your router supports it ([WikiHow](https://www.wikihow.com/Optimize-Soulseek-for-Downloading-Music)).
 
 ### Troubleshooting
 
-- **"Login failed" on startup?** Your credentials may be wrong, or the Soulseek server (`server.slsknet.org`) may be temporarily down. Check your `SLSK_USERNAME`/`SLSK_PASSWORD` env vars.
-- **Empty search results?** Either the query is too specific, the timeout was too short, or very few peers share that content. Broaden the query or increase the timeout.
-- **Downloads fail immediately?** The peer may have gone offline between your search and your download request. Use `peer_status` to verify they're still online.
-- **Everything is slow?** Increase `SLSK_MAX_CONCURRENT_DL` (default 3) to download from more peers in parallel. Increase `SLSK_MAX_CONCURRENT_OPS` if searches feel serialized.
+- **Empty search results?** Check: (1) query too specific — try fewer words, (2) timeout too short — increase to 15–20s, (3) search term matches an excluded phrase, (4) very few peers share this content — try again at peak hours. ([Nicotine+ troubleshooting](https://www.mintlify.com/nicotine-plus/nicotine-plus/features/search))
+- **"Login failed" on startup?** Credentials wrong, or `server.slsknet.org` temporarily down. Verify `SLSK_USERNAME`/`SLSK_PASSWORD`.
+- **Everything is slow?** Increase `SLSK_MAX_CONCURRENT_DL` to download from more peers in parallel. Close other bandwidth-heavy apps. If your upload is saturated (someone downloading from you), it can throttle your downloads too.
+- **Getting banned?** Some users ban leechers. The Soulseek community expects you to share files back. Users with no shared files or very slow upload speeds may be deprioritized or banned by individual peers.
 
 ## Development
 
