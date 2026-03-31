@@ -17,6 +17,7 @@ from .models import (
     DownloadResponse,
     DownloadStatusResponse,
     CancelDownloadResponse,
+    PeerStatusResponse,
 )
 from .slsk_client import SoulseekWrapper
 
@@ -143,6 +144,21 @@ async def cancel_download(id: str) -> dict:
 
     status = await _W.cancel_download(id)
     return CancelDownloadResponse(status=status).model_dump()
+
+
+@mcp.tool()
+async def peer_status(username: str) -> dict:
+    """Check a peer's online status, speed, queue, and free slots before downloading."""
+    try:
+        await _connect()
+    except RuntimeError as exc:
+        return ErrorResponse(code="not_authenticated", message=str(exc)).model_dump()
+
+    try:
+        result = await _with_retry(lambda: _W.peer_status(username))
+        return result.model_dump()
+    except Exception as exc:
+        return ErrorResponse(code="network_error", message=str(exc)).model_dump()
 
 
 # ── Resources ────────────────────────────────────────────────────────────────

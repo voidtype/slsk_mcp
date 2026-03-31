@@ -46,6 +46,20 @@ class SearchResultItem(BaseModel):
     bit_depth: Optional[int] = None
     duration_sec: Optional[int] = None
     audio_quality: Optional[int] = None
+    has_free_slots: Optional[bool] = None
+    avg_speed: Optional[int] = None  # bytes/sec
+    queue_size: Optional[int] = None
+
+
+class PeerStatusResponse(BaseModel):
+    username: str
+    status: str  # online | away | offline | unknown
+    avg_speed: Optional[int] = None  # bytes/sec
+    uploads: Optional[int] = None
+    shared_files: Optional[int] = None
+    shared_folders: Optional[int] = None
+    has_slots_free: Optional[bool] = None
+    queue_length: Optional[int] = None
 
 
 class SearchResponse(BaseModel):

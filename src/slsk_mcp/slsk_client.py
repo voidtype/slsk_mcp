@@ -17,6 +17,7 @@ from aioslsk.transfer.model import Transfer
 from .models import (
     SearchResultItem,
     DownloadStatusResponse,
+    PeerStatusResponse,
 )
 
 logger = logging.getLogger("slsk_mcp")
@@ -274,12 +275,22 @@ class SoulseekWrapper:
                         filename=filename,
                         filesize=shared_item.filesize,
                         extension=ext,
+                        has_free_slots=result.has_free_slots,
+                        avg_speed=result.avg_speed,
+                        queue_size=result.queue_size,
                         **attrs,
                     )
                 )
 
-        # Sort: lossless (high audio_quality) first, then by audio_quality desc
-        items.sort(key=lambda r: r.audio_quality or 0, reverse=True)
+        # Sort: free slots first, then by audio_quality desc, then speed desc
+        items.sort(
+            key=lambda r: (
+                1 if r.has_free_slots else 0,
+                r.audio_quality or 0,
+                r.avg_speed or 0,
+            ),
+            reverse=True,
+        )
 
         return items[:max_results]
 
@@ -397,6 +408,34 @@ class SoulseekWrapper:
             return "cancelled"
         except Exception:
             return "not_found"
+
+    # ── Peer Status ───────────────────────────────────────────────────────
+
+    async def peer_status(self, username: str) -> PeerStatusResponse:
+        """Query a peer's online status and stats from the server."""
+        assert self._client is not None
+
+        # Track the user so aioslsk fetches status + stats from server
+        await self._client.users.track_user(username)
+        # Give the server a moment to respond
+        await asyncio.sleep(1.5)
+
+        user = self._client.users.get_user_object(username)
+
+        status_map = {0: "offline", 1: "away", 2: "online"}
+        status_val = getattr(user.status, 'value', None)
+        status_str = status_map.get(status_val, "unknown") if status_val is not None else "unknown"
+
+        return PeerStatusResponse(
+            username=username,
+            status=status_str,
+            avg_speed=getattr(user, 'avg_speed', None),
+            uploads=getattr(user, 'uploads', None),
+            shared_files=getattr(user, 'shared_file_count', None),
+            shared_folders=getattr(user, 'shared_folder_count', None),
+            has_slots_free=getattr(user, 'has_slots_free', None),
+            queue_length=getattr(user, 'queue_length', None),
+        )
 
     # ── Status snapshot (for resources) ──────────────────────────────────
 
