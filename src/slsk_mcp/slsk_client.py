@@ -240,8 +240,14 @@ class SoulseekWrapper:
         timeout: Optional[int] = None,
         extensions: Optional[List[str]] = None,
         max_results: int = 50,
+        min_bitrate: Optional[int] = None,
+        min_filesize: Optional[int] = None,
+        max_filesize: Optional[int] = None,
+        free_slots_only: bool = False,
+        max_queue_size: Optional[int] = None,
+        min_speed: Optional[int] = None,
     ) -> List[SearchResultItem]:
-        """Run a network search and return sorted results."""
+        """Run a network search and return sorted, filtered results."""
         assert self._client is not None
 
         if timeout is None:
@@ -258,6 +264,15 @@ class SoulseekWrapper:
         items: List[SearchResultItem] = []
         for result in request.results:
             username = result.username
+
+            # Peer-level filters (Nicotine+ free-slot filter, Soularr max_peer_queue / min_peer_upload_speed)
+            if free_slots_only and not result.has_free_slots:
+                continue
+            if max_queue_size is not None and result.queue_size > max_queue_size:
+                continue
+            if min_speed is not None and result.avg_speed < min_speed:
+                continue
+
             for shared_item in result.shared_items:
                 filename = shared_item.filename
                 ext = _file_extension(filename)
@@ -265,7 +280,19 @@ class SoulseekWrapper:
                 if extensions and ext not in [e.lower() for e in extensions]:
                     continue
 
+                # File-level filters (Nicotine+ size filter, sldl min-bitrate)
+                if min_filesize is not None and shared_item.filesize < min_filesize:
+                    continue
+                if max_filesize is not None and shared_item.filesize > max_filesize:
+                    continue
+
                 attrs = _extract_attrs(shared_item.attributes)
+
+                if min_bitrate is not None:
+                    br = attrs.get("bitrate")
+                    if br is not None and br < min_bitrate:
+                        continue
+
                 file_id = f"{username}:{filename}"
 
                 items.append(

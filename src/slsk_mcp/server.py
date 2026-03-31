@@ -77,8 +77,23 @@ async def search(
     timeout: int = 7,
     extensions: Optional[list[str]] = None,
     max_results: int = 50,
+    min_bitrate: Optional[int] = None,
+    min_filesize: Optional[int] = None,
+    max_filesize: Optional[int] = None,
+    free_slots_only: bool = False,
+    max_queue_size: Optional[int] = None,
+    min_speed: Optional[int] = None,
 ) -> dict:
-    """Search the Soulseek network for files."""
+    """Search the Soulseek network for files.
+
+    Filters (applied post-search, like Nicotine+/sldl/Soularr):
+      - extensions: only return files with these extensions (e.g. ["flac","mp3"])
+      - min_bitrate: minimum bitrate in kbps (files with unknown bitrate are kept)
+      - min_filesize / max_filesize: file size bounds in bytes
+      - free_slots_only: only return results from peers with free upload slots
+      - max_queue_size: skip peers with queue larger than this (Soularr default: 50)
+      - min_speed: minimum peer upload speed in bytes/sec
+    """
     try:
         await _connect()
     except RuntimeError as exc:
@@ -93,6 +108,12 @@ async def search(
             timeout=timeout,
             extensions=extensions,
             max_results=max_results,
+            min_bitrate=min_bitrate,
+            min_filesize=min_filesize,
+            max_filesize=max_filesize,
+            free_slots_only=free_slots_only,
+            max_queue_size=max_queue_size,
+            min_speed=min_speed,
         ))
         return SearchResponse(count=len(results), results=results).model_dump()
     except Exception as exc:
@@ -161,6 +182,170 @@ async def peer_status(username: str) -> dict:
         return ErrorResponse(code="network_error", message=str(exc)).model_dump()
 
 
+# ── Search Tips (served via slsk://search_tips resource) ─────────────────────
+
+SEARCH_TIPS = {
+    "sources": [
+        "Nicotine+ (https://nicotine-plus.org)",
+        "sldl / slsk-batchdl (https://github.com/fiso64/sldl)",
+        "Soularr (https://github.com/mrusse/soularr)",
+        "SoulSync (https://github.com/Nezreka/SoulSync)",
+        "Soulseek FAQ (https://www.slsknet.org/news/faq-page)",
+        "r/Soulseek community",
+    ],
+    "query_craft": [
+        {
+            "tip": "Provide the least input that uniquely identifies the file",
+            "detail": "Soulseek matches every word against the full file path. 'Miles Davis Kind of Blue flac' beats 'jazz trumpet classic'. Include artist + album + format.",
+            "source": "sldl docs",
+            "mcp_action": "Pass a focused query string to the search tool.",
+        },
+        {
+            "tip": "Exclude unwanted terms with a minus sign",
+            "detail": "The Soulseek protocol supports '-word' to exclude results. 'flac -live' excludes live recordings. 'jazz -compilation' skips compilations.",
+            "source": "Nicotine+ search syntax",
+            "mcp_action": "Include '-term' directly in the query string, e.g. query='aphex twin flac -live'.",
+        },
+        {
+            "tip": "Search matches folder names and full file paths, not just filenames",
+            "detail": "Searching 'experimental' returns all files inside folders named 'experimental'. You can search by genre folder names, label names, or any part of the directory structure.",
+            "source": "Soulseek Wikipedia / official FAQ",
+            "mcp_action": "Use folder-level terms in query to find albums by genre or label.",
+        },
+        {
+            "tip": "Drop 'feat.' and featured artists from queries",
+            "detail": "Featured artist credits vary wildly across file names ('ft.', 'feat.', 'featuring', parenthesized). Including them causes missed matches.",
+            "source": "sldl --remove-ft flag",
+            "mcp_action": "Strip featured artist text before passing the query.",
+        },
+        {
+            "tip": "For 'Various Artists' compilations, search by track name only",
+            "detail": "The artist field on compilations is unreliable. sldl recommends removing the artist entirely for VA releases and searching by track title + album name.",
+            "source": "sldl tips",
+            "mcp_action": "Omit 'Various Artists' from query; use track title + album name instead.",
+        },
+    ],
+    "filters": [
+        {
+            "tip": "Filter by file extension to cut non-audio clutter",
+            "detail": "Search results include images, .nfo, .txt, .m3u, .cue files. Filter to audio only.",
+            "source": "Nicotine+ file type filter, Soularr allowed_filetypes",
+            "mcp_action": "Pass extensions=['flac','mp3'] (or your preferred formats) to the search tool.",
+        },
+        {
+            "tip": "Set a minimum bitrate to skip low-quality encodes",
+            "detail": "sldl defaults to preferring >= 200 kbps. Files with unknown bitrate are kept (SoulseekQt doesn't broadcast bitrate).",
+            "source": "sldl pref-min-bitrate=200, Nicotine+ bitrate filter",
+            "mcp_action": "Pass min_bitrate=200 (or 320 for high quality) to the search tool.",
+        },
+        {
+            "tip": "Filter by file size to skip tiny or suspiciously large files",
+            "detail": "A 3-minute MP3 at 320kbps is ~7MB. A 3-minute FLAC is ~25-35MB. Files under 1MB are likely corrupt or incomplete.",
+            "source": "Nicotine+ min/max file size filter",
+            "mcp_action": "Pass min_filesize=1000000 (1MB) to the search tool. Use max_filesize to cap.",
+        },
+        {
+            "tip": "Only show peers with free upload slots",
+            "detail": "If has_free_slots is false, you'll sit in their queue — potentially for hours. This is the single most impactful filter for download reliability.",
+            "source": "Nicotine+ 'Free Slot' filter (one of its most popular features)",
+            "mcp_action": "Pass free_slots_only=true to the search tool.",
+        },
+        {
+            "tip": "Cap peer queue size to avoid long waits",
+            "detail": "A peer with 200 files queued will take much longer to serve you than one with 5.",
+            "source": "Soularr maximum_peer_queue=50 default",
+            "mcp_action": "Pass max_queue_size=50 to the search tool.",
+        },
+        {
+            "tip": "Set a minimum peer upload speed",
+            "detail": "Peers with very low upload speeds will take forever. Filter them out.",
+            "source": "Soularr minimum_peer_upload_speed, Nicotine+ upload speed filter",
+            "mcp_action": "Pass min_speed=50000 (50 KB/s) or higher to the search tool.",
+        },
+    ],
+    "timing": [
+        {
+            "tip": "Increase timeout for rare or obscure content",
+            "detail": "7 seconds is the minimum. Popular music is fine at 7-10s. Niche/obscure content needs 15-30s for slower peers to respond.",
+            "source": "sldl --search-timeout, general community advice",
+            "mcp_action": "Pass timeout=20 or timeout=30 for rare searches.",
+        },
+        {
+            "tip": "Search at different times for different results",
+            "detail": "Results are a snapshot of who's online. Nicotine+ wishlists re-run searches every 90-120 minutes. Different peers are on at different times of day.",
+            "source": "Nicotine+ wishlist interval, Soulseek FAQ",
+            "mcp_action": "If first search yields nothing, try again later. Peak hours (US/EU evenings) have more peers online.",
+        },
+    ],
+    "peer_selection": [
+        {
+            "tip": "Use peer_status before committing to a download",
+            "detail": "The peer was online during search but may have gone offline. Check their current state before downloading.",
+            "source": "General best practice across all clients",
+            "mcp_action": "Call peer_status(username) — check for status='online' and has_slots_free=true.",
+        },
+        {
+            "tip": "For full albums, download all tracks from one peer",
+            "detail": "Downloading from one user ensures consistent encoding, tagging, and folder structure. Mixing peers produces inconsistent albums.",
+            "source": "SoulSync 'source reuse for album consistency'",
+            "mcp_action": "Filter search results by username to find a single peer sharing all album tracks.",
+        },
+        {
+            "tip": "If a peer can't connect, try the next one",
+            "detail": "If both you and the peer are behind NAT, neither can initiate a connection. This causes permanent 'queued' with no position number.",
+            "source": "Soulseek FAQ on listening ports, r/Soulseek community",
+            "mcp_action": "Cancel stalled download, pick another peer from search results sharing the same file.",
+        },
+    ],
+    "downloading": [
+        {
+            "tip": "Set a stale timeout and cancel stuck downloads",
+            "detail": "sldl waits 30s max; Soularr waits 1 hour. If a download hasn't progressed, cancel and try another peer.",
+            "source": "sldl --max-stale-time=30000, Soularr stalled_timeout=3600",
+            "mcp_action": "Poll download_status periodically. If progress_pct hasn't moved, call cancel_download and retry from next peer.",
+        },
+        {
+            "tip": "Prefer FLAC but accept fallbacks",
+            "detail": "sldl's default: prefer lossless (flac, wav) but still accept lossy if unavailable, with min preferred bitrate of 200 kbps. Don't get stuck hunting for a FLAC that doesn't exist.",
+            "source": "sldl pref-format=flac,wav with fallback",
+            "mcp_action": "First search with extensions=['flac']. If count=0, retry with extensions=['flac','mp3'].",
+        },
+        {
+            "tip": "Don't queue tons of files from one user",
+            "detail": "Soulseek etiquette: stick to 1-2 albums at a time per user. Queuing too much may get you banned.",
+            "source": "WikiHow Soulseek ban avoidance guide, community norms",
+            "mcp_action": "Spread downloads across multiple peers when grabbing large amounts.",
+        },
+        {
+            "tip": "Files with unknown bitrate may still be high quality",
+            "detail": "The standard SoulseekQt client doesn't broadcast bitrate. Don't reject files solely because metadata is null.",
+            "source": "sldl docs on --strict-conditions caveat",
+            "mcp_action": "The min_bitrate filter keeps files with unknown bitrate by design (same as sldl behavior).",
+        },
+    ],
+    "troubleshooting": [
+        {
+            "tip": "Empty search results?",
+            "detail": "Check: (1) query too specific — try fewer words, (2) timeout too short — increase to 15-20s, (3) very few peers share this — try again at peak hours, (4) search during off-peak may miss users.",
+            "source": "Nicotine+ troubleshooting docs",
+            "mcp_action": "Broaden query, increase timeout, retry later.",
+        },
+        {
+            "tip": "Stuck at 'queued' with no position number?",
+            "detail": "Almost always a connectivity issue — NAT on both sides. The peer can't reach you and you can't reach them.",
+            "source": "r/Soulseek (common across dozens of threads), Soulseek FAQ on listening ports",
+            "mcp_action": "Cancel and download from a different peer.",
+        },
+        {
+            "tip": "Soulseek recycles usernames after 30 days of inactivity",
+            "detail": "If you can't log in, your username may have been recycled. Register again.",
+            "source": "Soulseek FAQ",
+            "mcp_action": "Set correct SLSK_USERNAME/SLSK_PASSWORD env vars.",
+        },
+    ],
+}
+
+
 # ── Resources ────────────────────────────────────────────────────────────────
 
 
@@ -174,6 +359,16 @@ def get_status() -> str:
 def get_downloads() -> str:
     """List of all tracked downloads with status/progress."""
     return json.dumps(_W.all_downloads())
+
+
+@mcp.resource("slsk://search_tips")
+def get_search_tips() -> str:
+    """Actionable search and download strategies for the Soulseek network.
+
+    Sourced from Nicotine+, sldl, Soularr, SoulSync, and the Soulseek community.
+    Every tip maps to a feature available in this MCP server.
+    """
+    return json.dumps(SEARCH_TIPS)
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
