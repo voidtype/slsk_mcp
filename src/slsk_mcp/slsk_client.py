@@ -221,23 +221,30 @@ class SoulseekWrapper:
     def _has_listening_ports(self) -> bool:
         """Check if the client has active listening connections."""
         try:
-            network = self._client._network  # type: ignore[union-attr]
-            listeners = getattr(network, "listening_connections", [])
-            return len(listeners) > 0
+            from aioslsk.network.connection import ConnectionState
+            network = self._client.network  # type: ignore[union-attr]
+            listeners = getattr(network, "listening_connections", ())
+            return any(
+                conn is not None and conn.state == ConnectionState.CONNECTED
+                for conn in listeners
+            )
         except Exception:
             return False
 
     def _get_listening_port(self) -> Optional[int]:
         """Return the listening port number, or None if not bound."""
         try:
-            network = self._client._network  # type: ignore[union-attr]
-            listeners = getattr(network, "listening_connections", [])
-            if listeners:
-                sock = listeners[0].get_extra_info("socket") if hasattr(listeners[0], "get_extra_info") else None
-                if sock:
-                    return sock.getsockname()[1]
-                # Try settings fallback
-                return self._client.settings.network.listening.port
+            from aioslsk.network.connection import ConnectionState
+            network = self._client.network  # type: ignore[union-attr]
+            listeners = getattr(network, "listening_connections", ())
+            # First element is the non-obfuscated listener
+            conn = listeners[0] if listeners else None
+            if conn is not None and conn.state == ConnectionState.CONNECTED:
+                if conn._server is not None:
+                    sockets = conn._server.sockets
+                    if sockets:
+                        return sockets[0].getsockname()[1]
+                return conn.port
         except Exception:
             pass
         return None
