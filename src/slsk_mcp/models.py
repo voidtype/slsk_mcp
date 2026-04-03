@@ -79,6 +79,7 @@ class DownloadResponse(BaseModel):
     local_path: Optional[str] = None
     filesize: Optional[int] = None
     message: str
+    wait_before_poll_secs: int = 30
 
 
 # ── Download Status ──────────────────────────────────────────────────────────
@@ -88,12 +89,14 @@ class DownloadStatusRequest(BaseModel):
 
 
 class DownloadStatusResponse(BaseModel):
-    status: str  # queued | downloading | finished | failed | cancelled | not_found
+    status: str  # queued | downloading | finished | failed | cancelled | not_found | session_expired
     progress_pct: Optional[float] = None
     received_bytes: Optional[int] = None
     total_bytes: Optional[int] = None
     speed_bps: Optional[int] = None
     local_path: Optional[str] = None
+    age_seconds: Optional[float] = None
+    message: Optional[str] = None
 
 
 # ── Cancel Download ──────────────────────────────────────────────────────────

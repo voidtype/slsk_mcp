@@ -122,7 +122,15 @@ async def search(
 
 @mcp.tool()
 async def download(id: str, output_dir: Optional[str] = None) -> dict:
-    """Download a file from a Soulseek peer."""
+    """Download a file from a Soulseek peer.
+
+    IMPORTANT: After calling this, you MUST wait at least 30 seconds before
+    calling download_status. P2P connections take time to establish — the peer
+    must accept the request, negotiate the connection, and begin sending data.
+    Checking immediately will always show 0% and is NOT a reason to cancel.
+
+    The response includes wait_before_poll_secs — do not poll before that many seconds.
+    """
     try:
         await _connect()
     except RuntimeError as exc:
@@ -146,7 +154,17 @@ async def download(id: str, output_dir: Optional[str] = None) -> dict:
 
 @mcp.tool()
 async def download_status(id: str) -> dict:
-    """Poll progress of an active or recent download."""
+    """Poll progress of an active or recent download.
+
+    CRITICAL TIMING RULES:
+    - Do NOT call this within 30 seconds of starting a download.
+    - status='queued' at 0% is NORMAL for the first 1-2 minutes. P2P takes time.
+    - Do NOT cancel a download just because it shows queued/0%. Check age_seconds.
+    - Only consider cancelling if age_seconds > 180 (3 minutes) with no progress.
+    - The 'message' field contains contextual guidance — read it before deciding.
+    - If status='not_found' or status='session_expired', the download ID is stale
+      (server restarted). You must re-search and re-download.
+    """
     try:
         await _connect()
     except RuntimeError as exc:
@@ -157,7 +175,15 @@ async def download_status(id: str) -> dict:
 
 @mcp.tool()
 async def cancel_download(id: str) -> dict:
-    """Abort an in-progress download."""
+    """Abort an in-progress download.
+
+    ONLY cancel a download if:
+    - download_status shows age_seconds > 180 AND status is still 'queued' (stuck)
+    - download_status shows status='failed'
+    - You explicitly want to switch to a different peer
+
+    Do NOT cancel just because progress is 0% — P2P connections take 1-3 minutes.
+    """
     try:
         await _connect()
     except RuntimeError as exc:

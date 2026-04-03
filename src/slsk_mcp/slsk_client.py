@@ -102,7 +102,11 @@ class SoulseekWrapper:
         self._username: Optional[str] = None
         self._password: Optional[str] = None
 
-        # id → {transfer, local_path, filesize, finished_at}
+        # Session tracking — increments on each successful login
+        self._session_id: int = 0
+        self._session_start: Optional[float] = None
+
+        # id → {transfer, local_path, filesize, finished_at, session_id, started_at}
         self._downloads: Dict[str, Dict[str, Any]] = {}
 
         # Connection mutex — prevents concurrent login stomps
@@ -189,8 +193,12 @@ class SoulseekWrapper:
         self._connected = True
         self._username = username
         self._password = password
+        self._session_id += 1
+        self._session_start = time.time()
         self._download_sem = asyncio.Semaphore(self._max_concurrent_dl)
-        logger.info("Login complete (passive=%s)", self._passive_mode)
+        # Invalidate downloads from previous sessions (transfer objects are dead)
+        self._invalidate_stale_downloads()
+        logger.info("Login complete (session=%d, passive=%s)", self._session_id, self._passive_mode)
         return True, "Logged in successfully", self._passive_mode
 
     def _has_listening_ports(self) -> bool:
@@ -201,6 +209,32 @@ class SoulseekWrapper:
             return len(listeners) > 0
         except Exception:
             return False
+
+    def _get_listening_port(self) -> Optional[int]:
+        """Return the listening port number, or None if not bound."""
+        try:
+            network = self._client._network  # type: ignore[union-attr]
+            listeners = getattr(network, "listening_connections", [])
+            if listeners:
+                sock = listeners[0].get_extra_info("socket") if hasattr(listeners[0], "get_extra_info") else None
+                if sock:
+                    return sock.getsockname()[1]
+                # Try settings fallback
+                return self._client.settings.network.listening.port
+        except Exception:
+            pass
+        return None
+
+    def _invalidate_stale_downloads(self) -> None:
+        """Mark all downloads from previous sessions as expired."""
+        stale_ids = [
+            fid for fid, entry in self._downloads.items()
+            if entry.get("session_id", 0) < self._session_id
+        ]
+        for fid in stale_ids:
+            del self._downloads[fid]
+        if stale_ids:
+            logger.info("Cleared %d stale downloads from previous session", len(stale_ids))
 
     async def logout(self) -> None:
         """Disconnect from Soulseek."""
@@ -357,6 +391,8 @@ class SoulseekWrapper:
                 "local_path": str(local_file),
                 "filesize": transfer.filesize if hasattr(transfer, 'filesize') else None,
                 "finished_at": None,
+                "session_id": self._session_id,
+                "started_at": time.time(),
             }
             # Release semaphore when transfer completes (fire-and-forget)
             asyncio.get_event_loop().create_task(
@@ -398,7 +434,17 @@ class SoulseekWrapper:
 
         entry = self._downloads.get(file_id)
         if not entry:
-            return DownloadStatusResponse(status="not_found")
+            return DownloadStatusResponse(
+                status="not_found",
+                message="Download ID not found. If the MCP server restarted, all previous download state is lost. You must re-search and re-download.",
+            )
+
+        # Check session validity
+        if entry.get("session_id", 0) < self._session_id:
+            return DownloadStatusResponse(
+                status="session_expired",
+                message="This download was started in a previous session that no longer exists. The transfer object is dead. Re-search and re-download from a fresh search.",
+            )
 
         transfer: Transfer = entry["transfer"]
         status = self._transfer_state(transfer)
@@ -411,6 +457,20 @@ class SoulseekWrapper:
 
         progress_pct = (received / total * 100) if total else 0.0
 
+        started_at = entry.get("started_at", time.time())
+        age = round(time.time() - started_at, 1)
+
+        # Contextual message to help AI make good decisions
+        msg = None
+        if status == "queued" and age < 60:
+            msg = f"NORMAL: download is queued ({age:.0f}s old). P2P connections take time to establish. Do NOT cancel yet — wait at least 60 seconds."
+        elif status == "queued" and age < 180:
+            msg = f"Download has been queued for {age:.0f}s. The peer may be busy or behind NAT. Consider waiting up to 3 minutes before cancelling."
+        elif status == "queued" and age >= 180:
+            msg = f"Download stuck queued for {age:.0f}s. Likely a connectivity issue (double-NAT). Cancel and try the next peer sharing this file."
+        elif status == "downloading":
+            msg = f"Transfer active at {speed} bytes/sec. Do not cancel."
+
         return DownloadStatusResponse(
             status=status,
             progress_pct=round(progress_pct, 1),
@@ -418,6 +478,8 @@ class SoulseekWrapper:
             total_bytes=total,
             speed_bps=speed,
             local_path=entry.get("local_path"),
+            age_seconds=age,
+            message=msg,
         )
 
     # ── Cancel Download ──────────────────────────────────────────────────
@@ -467,10 +529,30 @@ class SoulseekWrapper:
     # ── Status snapshot (for resources) ──────────────────────────────────
 
     def connection_status(self) -> Dict[str, Any]:
+        session_uptime = None
+        if self._session_start:
+            session_uptime = round(time.time() - self._session_start, 1)
+
+        listening_port = self._get_listening_port() if self._connected else None
+        active_downloads = sum(
+            1 for e in self._downloads.values()
+            if e.get("session_id") == self._session_id and not e.get("finished_at")
+        )
+
         return {
             "connected": self._connected,
             "username": self._username,
             "passive_mode": self._passive_mode,
+            "session_id": self._session_id,
+            "session_uptime_secs": session_uptime,
+            "listening_port": listening_port,
+            "active_downloads": active_downloads,
+            "p2p_reachable": not self._passive_mode and listening_port is not None,
+            "note": (
+                "passive_mode=true means no listening port is bound. "
+                "P2P transfers may fail if both you and the peer are behind NAT. "
+                "Configure SLSK_LISTEN_PORT and forward that port on your router."
+            ) if self._passive_mode else None,
         }
 
     def all_downloads(self) -> List[Dict[str, Any]]:

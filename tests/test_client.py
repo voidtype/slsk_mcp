@@ -86,6 +86,8 @@ def test_download_status_not_found():
     w = SoulseekWrapper()
     resp = w.download_status("nobody:/nothing.mp3")
     assert resp.status == "not_found"
+    assert resp.message is not None
+    assert "re-search" in resp.message.lower() or "not found" in resp.message.lower()
 
 
 def test_connection_status():
@@ -94,6 +96,11 @@ def test_connection_status():
     assert s["connected"] is False
     assert s["username"] is None
     assert s["passive_mode"] is False
+    assert s["session_id"] == 0
+    assert s["session_uptime_secs"] is None
+    assert s["listening_port"] is None
+    assert s["active_downloads"] == 0
+    assert s["p2p_reachable"] is False
 
 
 def test_all_downloads_empty():
