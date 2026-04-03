@@ -172,6 +172,7 @@ class SoulseekWrapper:
 
         listen_port = int(os.environ.get("SLSK_LISTEN_PORT", "0")) or None
         obfuscated_port = int(os.environ.get("SLSK_OBFUSCATED_PORT", "0")) or None
+        logger.info("Listen port config: SLSK_LISTEN_PORT=%s, parsed=%s", os.environ.get("SLSK_LISTEN_PORT"), listen_port)
 
         settings = Settings(
             credentials=CredentialsSettings(
@@ -185,6 +186,7 @@ class SoulseekWrapper:
             settings.network.listening.port = listen_port
         if obfuscated_port:
             settings.network.listening.obfuscated_port = obfuscated_port
+        logger.info("Listening settings: port=%s, error_mode=%s", settings.network.listening.port, settings.network.listening.error_mode)
 
         download_dir = os.environ.get("SLSK_DOWNLOAD_DIR", "./downloads")
         settings.shares.download = download_dir
