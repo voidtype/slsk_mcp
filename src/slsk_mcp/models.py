@@ -72,7 +72,6 @@ class SearchResponse(BaseModel):
 
 class DownloadRequest(BaseModel):
     id: str
-    output_dir: Optional[str] = None
 
 
 class DownloadResponse(BaseModel):

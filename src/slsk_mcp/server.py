@@ -121,8 +121,10 @@ async def search(
 
 
 @mcp.tool()
-async def download(id: str, output_dir: Optional[str] = None) -> dict:
+async def download(id: str) -> dict:
     """Download a file from a Soulseek peer.
+
+    Files are saved to the directory configured by SLSK_DOWNLOAD_DIR.
 
     IMPORTANT: After calling this, SLEEP for at least 30 seconds (or do other
     productive work) before calling download_status. P2P connections take time
@@ -139,7 +141,7 @@ async def download(id: str, output_dir: Optional[str] = None) -> dict:
 
     try:
         ok, message, local_path, filesize = await _with_retry(
-            lambda: _W.download(id, output_dir)
+            lambda: _W.download(id)
         )
         if ok:
             return DownloadResponse(

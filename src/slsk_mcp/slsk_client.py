@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from aioslsk.client import SoulSeekClient
@@ -384,26 +383,15 @@ class SoulseekWrapper:
     # ── Download ─────────────────────────────────────────────────────────
 
     async def download(
-        self, file_id: str, output_dir: Optional[str] = None
+        self, file_id: str
     ) -> Tuple[bool, str, Optional[str], Optional[int]]:
-        """Start a download. Returns (success, message, local_path, filesize)."""
+        """Start a download. Returns (success, message, local_path, filesize).
+
+        Files are saved to SLSK_DOWNLOAD_DIR (set at login time).
+        """
         assert self._client is not None
 
         username, remote_path = _parse_id(file_id)
-        filename = remote_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-
-        dl_dir = output_dir or os.environ.get("SLSK_DOWNLOAD_DIR", "./downloads")
-        dl_path = Path(dl_dir)
-        dl_path.mkdir(parents=True, exist_ok=True)
-
-        # Resolve collision
-        local_file = dl_path / filename
-        counter = 1
-        stem = local_file.stem
-        suffix = local_file.suffix
-        while local_file.exists():
-            local_file = dl_path / f"{stem}_{counter}{suffix}"
-            counter += 1
 
         # Duplicate detection: if already tracked and transfer is alive, return existing
         existing = self._downloads.get(file_id)
@@ -420,10 +408,14 @@ class SoulseekWrapper:
                 transfer: Transfer = await self._client.transfers.download(
                     username, remote_path
                 )
+            # aioslsk sets transfer.local_path when the download starts;
+            # read it back so we report the real path, not a guess.
+            local_path = getattr(transfer, 'local_path', None)
+            filesize = transfer.filesize if hasattr(transfer, 'filesize') else None
             self._downloads[file_id] = {
                 "transfer": transfer,
-                "local_path": str(local_file),
-                "filesize": transfer.filesize if hasattr(transfer, 'filesize') else None,
+                "local_path": local_path,
+                "filesize": filesize,
                 "finished_at": None,
                 "session_id": self._session_id,
                 "started_at": time.time(),
@@ -432,8 +424,7 @@ class SoulseekWrapper:
             asyncio.get_event_loop().create_task(
                 self._watch_transfer(file_id)
             )
-            filesize = transfer.filesize if hasattr(transfer, 'filesize') else None
-            return True, "Download started", str(local_file), filesize
+            return True, "Download started", local_path, filesize
         except Exception as exc:
             self._download_sem.release()
             return False, f"Download failed: {exc}", None, None
