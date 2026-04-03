@@ -124,12 +124,13 @@ async def search(
 async def download(id: str, output_dir: Optional[str] = None) -> dict:
     """Download a file from a Soulseek peer.
 
-    IMPORTANT: After calling this, you MUST wait at least 30 seconds before
-    calling download_status. P2P connections take time to establish — the peer
-    must accept the request, negotiate the connection, and begin sending data.
-    Checking immediately will always show 0% and is NOT a reason to cancel.
+    IMPORTANT: After calling this, SLEEP for at least 30 seconds (or do other
+    productive work) before calling download_status. P2P connections take time
+    to establish — the peer must accept, negotiate, and begin sending data.
+    Checking immediately wastes tokens and will always show 0%.
 
-    The response includes wait_before_poll_secs — do not poll before that many seconds.
+    The response includes wait_before_poll_secs — you MUST sleep/wait that many
+    seconds before your first status poll. Do not live-poll in a loop.
     """
     try:
         await _connect()
@@ -161,7 +162,8 @@ async def download_status(id: str) -> dict:
     - status='queued' at 0% is NORMAL for the first 1-2 minutes. P2P takes time.
     - Do NOT cancel a download just because it shows queued/0%. Check age_seconds.
     - Only consider cancelling if age_seconds > 180 (3 minutes) with no progress.
-    - The 'message' field contains contextual guidance — read it before deciding.
+    - The 'message' field contains contextual guidance — READ IT and follow its
+      sleep recommendation before polling again. Do NOT live-poll in a tight loop.
     - If status='not_found' or status='session_expired', the download ID is stale
       (server restarted). You must re-search and re-download.
     """

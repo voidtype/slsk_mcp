@@ -526,9 +526,11 @@ class SoulseekWrapper:
         # Contextual message to help AI make good decisions
         msg = None
         if status == "queued" and age < 60:
-            msg = f"NORMAL: download is queued ({age:.0f}s old, state={conn_state}). P2P connections take time to establish. Do NOT cancel yet — wait at least 60 seconds."
+            remaining = max(10, 60 - int(age))
+            msg = f"NORMAL: download is queued ({age:.0f}s old, state={conn_state}). P2P connections take time. Do NOT cancel or poll again yet — sleep {remaining}s (or do other work) then re-check."
         elif status == "queued" and age < 180:
-            msg = f"Download has been queued for {age:.0f}s (state={conn_state}). The peer may be busy or behind NAT. Consider waiting up to 3 minutes before cancelling."
+            remaining = max(10, 180 - int(age))
+            msg = f"Download queued for {age:.0f}s (state={conn_state}). Peer may be busy or behind NAT. Do NOT poll in a tight loop — sleep {remaining}s (or do other work) before checking again. Only cancel after 180s with no progress."
         elif status == "queued" and age >= 180:
             if conn_state == "waiting_for_peer":
                 msg = f"Download stuck at waiting_for_peer for {age:.0f}s. The peer is not responding — likely offline or blocking. Cancel and try the next peer."
@@ -537,7 +539,7 @@ class SoulseekWrapper:
             else:
                 msg = f"Download stuck queued for {age:.0f}s (state={conn_state}). Likely a connectivity issue. Cancel and try the next peer sharing this file."
         elif status == "downloading":
-            msg = f"Transfer active at {speed} bytes/sec. Do not cancel."
+            msg = f"Transfer active at {speed} bytes/sec. Do not cancel. Sleep 15-30s before next poll."
 
         return DownloadStatusResponse(
             status=status,
