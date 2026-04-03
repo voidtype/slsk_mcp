@@ -472,14 +472,14 @@ class SoulseekWrapper:
 
     def _transfer_state(self, transfer: Transfer) -> str:
         """Map aioslsk transfer state to our status string."""
-        state_name = transfer.state.name if hasattr(transfer.state, 'name') else str(transfer.state)
+        state_name = transfer.state.VALUE.name
         return _STATE_MAP.get(state_name.upper(), "queued")
 
     # ── Download Status ──────────────────────────────────────────────────
 
     def _connection_state(self, transfer: Transfer) -> str:
         """Map aioslsk transfer state to detailed connection state."""
-        state_name = transfer.state.name if hasattr(transfer.state, 'name') else str(transfer.state)
+        state_name = transfer.state.VALUE.name
         return _CONN_STATE_MAP.get(state_name.upper(), "pending")
 
     def download_status(self, file_id: str) -> DownloadStatusResponse:
