@@ -31,7 +31,7 @@ ATTR_BIT_DEPTH = 5
 # How long to keep finished download records before cleanup (seconds)
 _FINISHED_TTL = 60
 
-# Transfer state name mapping
+# Transfer state name mapping (coarse status for simple decisions)
 _STATE_MAP: Dict[str, str] = {
     "VIRGIN": "queued",
     "QUEUED": "queued",
@@ -44,6 +44,21 @@ _STATE_MAP: Dict[str, str] = {
     "FAILED": "failed",
     "ABORTED": "cancelled",
     "PAUSED": "queued",
+}
+
+# Detailed connection state (diagnostic — tells you WHERE it's stuck)
+_CONN_STATE_MAP: Dict[str, str] = {
+    "VIRGIN": "pending",
+    "QUEUED": "waiting_for_peer",
+    "INITIALIZING": "connecting",
+    "NEGOTIATING": "negotiating",
+    "DOWNLOADING": "transferring",
+    "UPLOADING": "transferring",
+    "INCOMPLETE": "transferring",
+    "COMPLETE": "complete",
+    "FAILED": "failed",
+    "ABORTED": "aborted",
+    "PAUSED": "paused",
 }
 
 
@@ -295,6 +310,22 @@ class SoulseekWrapper:
                 await asyncio.sleep(timeout)
 
         logger.info("Search complete: %d raw results for query=%r", len(request.results), query)
+
+        # Build a cached user status lookup for online_now field
+        _user_online: Dict[str, Optional[bool]] = {}
+        def _check_online(uname: str) -> Optional[bool]:
+            if uname in _user_online:
+                return _user_online[uname]
+            try:
+                user_obj = self._client.users.get_user_object(uname)  # type: ignore[union-attr]
+                status_val = getattr(getattr(user_obj, 'status', None), 'value', None)
+                # 0=offline, 1=away, 2=online; away counts as online (they appeared in results)
+                online = status_val is not None and status_val > 0 if status_val is not None else None
+                _user_online[uname] = online
+            except Exception:
+                _user_online[uname] = None
+            return _user_online[uname]
+
         items: List[SearchResultItem] = []
         for result in request.results:
             username = result.username
@@ -339,6 +370,7 @@ class SoulseekWrapper:
                         has_free_slots=result.has_free_slots,
                         avg_speed=result.avg_speed,
                         queue_size=result.queue_size,
+                        online_now=_check_online(username),
                         **attrs,
                     )
                 )
@@ -378,6 +410,14 @@ class SoulseekWrapper:
         while local_file.exists():
             local_file = dl_path / f"{stem}_{counter}{suffix}"
             counter += 1
+
+        # Duplicate detection: if already tracked and transfer is alive, return existing
+        existing = self._downloads.get(file_id)
+        if existing and existing.get("session_id") == self._session_id:
+            transfer_existing: Transfer = existing["transfer"]
+            state = self._transfer_state(transfer_existing)
+            if state in ("queued", "downloading"):
+                return True, "Download already in progress (duplicate request ignored)", existing.get("local_path"), existing.get("filesize")
 
         try:
             assert self._download_sem is not None
@@ -428,14 +468,26 @@ class SoulseekWrapper:
 
     # ── Download Status ──────────────────────────────────────────────────
 
+    def _connection_state(self, transfer: Transfer) -> str:
+        """Map aioslsk transfer state to detailed connection state."""
+        state_name = transfer.state.name if hasattr(transfer.state, 'name') else str(transfer.state)
+        return _CONN_STATE_MAP.get(state_name.upper(), "pending")
+
     def download_status(self, file_id: str) -> DownloadStatusResponse:
         """Get current download progress."""
         self._cleanup_finished()
+
+        # Parse username from file_id for all responses
+        try:
+            username, _ = _parse_id(file_id)
+        except (ValueError, IndexError):
+            username = None
 
         entry = self._downloads.get(file_id)
         if not entry:
             return DownloadStatusResponse(
                 status="not_found",
+                username=username,
                 message="Download ID not found. If the MCP server restarted, all previous download state is lost. You must re-search and re-download.",
             )
 
@@ -443,11 +495,13 @@ class SoulseekWrapper:
         if entry.get("session_id", 0) < self._session_id:
             return DownloadStatusResponse(
                 status="session_expired",
+                username=username,
                 message="This download was started in a previous session that no longer exists. The transfer object is dead. Re-search and re-download from a fresh search.",
             )
 
         transfer: Transfer = entry["transfer"]
         status = self._transfer_state(transfer)
+        conn_state = self._connection_state(transfer)
 
         total = getattr(transfer, "filesize", None) or 0
         received = getattr(transfer, "bytes_transfered", None)
@@ -463,16 +517,23 @@ class SoulseekWrapper:
         # Contextual message to help AI make good decisions
         msg = None
         if status == "queued" and age < 60:
-            msg = f"NORMAL: download is queued ({age:.0f}s old). P2P connections take time to establish. Do NOT cancel yet — wait at least 60 seconds."
+            msg = f"NORMAL: download is queued ({age:.0f}s old, state={conn_state}). P2P connections take time to establish. Do NOT cancel yet — wait at least 60 seconds."
         elif status == "queued" and age < 180:
-            msg = f"Download has been queued for {age:.0f}s. The peer may be busy or behind NAT. Consider waiting up to 3 minutes before cancelling."
+            msg = f"Download has been queued for {age:.0f}s (state={conn_state}). The peer may be busy or behind NAT. Consider waiting up to 3 minutes before cancelling."
         elif status == "queued" and age >= 180:
-            msg = f"Download stuck queued for {age:.0f}s. Likely a connectivity issue (double-NAT). Cancel and try the next peer sharing this file."
+            if conn_state == "waiting_for_peer":
+                msg = f"Download stuck at waiting_for_peer for {age:.0f}s. The peer is not responding — likely offline or blocking. Cancel and try the next peer."
+            elif conn_state == "connecting":
+                msg = f"Download stuck at connecting for {age:.0f}s. Cannot establish P2P connection — likely a NAT/firewall issue on the peer's side. Cancel and try another peer."
+            else:
+                msg = f"Download stuck queued for {age:.0f}s (state={conn_state}). Likely a connectivity issue. Cancel and try the next peer sharing this file."
         elif status == "downloading":
             msg = f"Transfer active at {speed} bytes/sec. Do not cancel."
 
         return DownloadStatusResponse(
             status=status,
+            username=username,
+            connection_state=conn_state,
             progress_pct=round(progress_pct, 1),
             received_bytes=received,
             total_bytes=total,
@@ -484,19 +545,24 @@ class SoulseekWrapper:
 
     # ── Cancel Download ──────────────────────────────────────────────────
 
-    async def cancel_download(self, file_id: str) -> str:
-        """Abort a download. Returns 'cancelled' or 'not_found'."""
+    async def cancel_download(self, file_id: str) -> Dict[str, Any]:
+        """Abort a download. Returns dict with status and received_bytes."""
         entry = self._downloads.get(file_id)
         if not entry:
-            return "not_found"
+            return {"status": "not_found", "received_bytes": None}
 
         transfer: Transfer = entry["transfer"]
+        # Capture bytes before aborting
+        received = getattr(transfer, "bytes_transfered", None)
+        if received is None:
+            received = getattr(transfer, "bytes_transferred", 0)
+
         try:
             assert self._client is not None
             await self._client.transfers.abort(transfer)
-            return "cancelled"
+            return {"status": "cancelled", "received_bytes": received}
         except Exception:
-            return "not_found"
+            return {"status": "not_found", "received_bytes": received}
 
     # ── Peer Status ───────────────────────────────────────────────────────
 
@@ -547,6 +613,7 @@ class SoulseekWrapper:
             "session_uptime_secs": session_uptime,
             "listening_port": listening_port,
             "active_downloads": active_downloads,
+            "max_concurrent_downloads": self._max_concurrent_dl,
             "p2p_reachable": not self._passive_mode and listening_port is not None,
             "note": (
                 "passive_mode=true means no listening port is bound. "

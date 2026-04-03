@@ -189,8 +189,30 @@ async def cancel_download(id: str) -> dict:
     except RuntimeError as exc:
         return ErrorResponse(code="not_authenticated", message=str(exc)).model_dump()
 
-    status = await _W.cancel_download(id)
-    return CancelDownloadResponse(status=status).model_dump()
+    result = await _W.cancel_download(id)
+    return CancelDownloadResponse(
+        status=result["status"],
+        received_bytes=result.get("received_bytes"),
+    ).model_dump()
+
+
+@mcp.tool()
+async def list_downloads() -> dict:
+    """List all active/queued/recent downloads in the current session.
+
+    Use this to recover state after context compaction or session resume.
+    Returns all tracked downloads with their current status, progress,
+    age_seconds, username, connection_state, and local_path.
+
+    Each entry includes the download ID so you can call download_status
+    or cancel_download on specific items.
+    """
+    try:
+        await _connect()
+    except RuntimeError as exc:
+        return ErrorResponse(code="not_authenticated", message=str(exc)).model_dump()
+
+    return {"downloads": _W.all_downloads()}
 
 
 @mcp.tool()

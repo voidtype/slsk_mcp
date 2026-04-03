@@ -49,6 +49,7 @@ class SearchResultItem(BaseModel):
     has_free_slots: Optional[bool] = None
     avg_speed: Optional[int] = None  # bytes/sec
     queue_size: Optional[int] = None
+    online_now: Optional[bool] = None  # cached user status from server, None if unknown
 
 
 class PeerStatusResponse(BaseModel):
@@ -90,6 +91,8 @@ class DownloadStatusRequest(BaseModel):
 
 class DownloadStatusResponse(BaseModel):
     status: str  # queued | downloading | finished | failed | cancelled | not_found | session_expired
+    username: Optional[str] = None
+    connection_state: Optional[str] = None  # pending | waiting_for_peer | connecting | negotiating | transferring | complete | failed | aborted
     progress_pct: Optional[float] = None
     received_bytes: Optional[int] = None
     total_bytes: Optional[int] = None
@@ -106,7 +109,8 @@ class CancelDownloadRequest(BaseModel):
 
 
 class CancelDownloadResponse(BaseModel):
-    status: str  # "cancelled" | "not_found"
+    status: str  # "cancelled" | "not_found" | "already_in_progress"
+    received_bytes: Optional[int] = None
 
 
 # ── Error ────────────────────────────────────────────────────────────────────
