@@ -194,6 +194,29 @@ async def cancel_download(id: str) -> dict:
 
 
 @mcp.tool()
+async def connection_health() -> dict:
+    """Check the MCP's Soulseek connection health before starting work.
+
+    Call this at the start of every session and after any suspected restart.
+    Returns: connected, passive_mode, session_id, listening_port, p2p_reachable,
+    session_uptime_secs, active_downloads, and a note if something needs attention.
+
+    Key fields:
+    - session_id: increments on each login. If it changed since your last check,
+      all previous download IDs are invalid — re-search and re-download.
+    - p2p_reachable: false means downloads will likely fail (double-NAT).
+      Warn the user and suggest configuring SLSK_LISTEN_PORT + port forwarding.
+    - passive_mode: true means no listening port bound. Same implication as above.
+    """
+    try:
+        await _connect()
+    except RuntimeError as exc:
+        return ErrorResponse(code="not_authenticated", message=str(exc)).model_dump()
+
+    return _W.connection_status()
+
+
+@mcp.tool()
 async def peer_status(username: str) -> dict:
     """Check a peer's online status, speed, queue, and free slots before downloading."""
     try:
