@@ -320,21 +320,6 @@ class SoulseekWrapper:
 
         logger.info("Search complete: %d raw results for query=%r", len(request.results), query)
 
-        # Build a cached user status lookup for online_now field
-        _user_online: Dict[str, Optional[bool]] = {}
-        def _check_online(uname: str) -> Optional[bool]:
-            if uname in _user_online:
-                return _user_online[uname]
-            try:
-                user_obj = self._client.users.get_user_object(uname)  # type: ignore[union-attr]
-                status_val = getattr(getattr(user_obj, 'status', None), 'value', None)
-                # 0=offline, 1=away, 2=online; away counts as online (they appeared in results)
-                online = status_val is not None and status_val > 0 if status_val is not None else None
-                _user_online[uname] = online
-            except Exception:
-                _user_online[uname] = None
-            return _user_online[uname]
-
         items: List[SearchResultItem] = []
         for result in request.results:
             username = result.username
@@ -379,7 +364,7 @@ class SoulseekWrapper:
                         has_free_slots=result.has_free_slots,
                         avg_speed=result.avg_speed,
                         queue_size=result.queue_size,
-                        online_now=_check_online(username),
+                        online_now=True,  # peers in search results responded to our query, so they're online
                         **attrs,
                     )
                 )
