@@ -243,6 +243,22 @@ async def connection_health() -> dict:
 
 
 @mcp.tool()
+async def get_config() -> dict:
+    """Return the MCP's runtime configuration (no secrets).
+
+    Use this to check where files are being downloaded, which ports are
+    configured, concurrency limits, and the connected username.
+    """
+    return {
+        "username": os.environ.get("SLSK_USERNAME", ""),
+        "download_dir": os.environ.get("SLSK_DOWNLOAD_DIR", "./downloads"),
+        "listen_port": os.environ.get("SLSK_LISTEN_PORT", "(default 60000)"),
+        "obfuscated_port": os.environ.get("SLSK_OBFUSCATED_PORT", "(default 60001)"),
+        "max_concurrent_downloads": int(os.environ.get("SLSK_MAX_CONCURRENT_DL", "2")),
+    }
+
+
+@mcp.tool()
 async def peer_status(username: str) -> dict:
     """Check a peer's online status, speed, queue, and free slots before downloading."""
     try:
