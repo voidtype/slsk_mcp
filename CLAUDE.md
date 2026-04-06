@@ -13,6 +13,14 @@ Soulseek MCP server for Claude Desktop / Claude Code.
 - `src/slsk_mcp/slsk_client.py` — Soulseek wrapper (login, download management, connection health)
 - `src/slsk_mcp/models.py` — Pydantic response models
 
+## MCP tools for the AI
+
+### `get_config`
+Returns runtime settings (download directory, listen port, concurrency limits, username). Call this when you need to know where files are saved or what the current configuration is. No arguments required. Does not require a connection.
+
+### `.part` file convention
+Downloads are written as `filename.flac.part` during transfer. The `.part` suffix is removed only on successful completion. If a file still has `.part`, the download failed or is still in progress — do not treat it as a finished file.
+
 ## Testing
 
 - No test suite currently; verify by restarting Claude Desktop and calling `connection_health`.
