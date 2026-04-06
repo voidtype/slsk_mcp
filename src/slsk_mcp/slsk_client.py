@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from aioslsk.client import SoulSeekClient
@@ -388,6 +389,8 @@ class SoulseekWrapper:
         """Start a download. Returns (success, message, local_path, filesize).
 
         Files are saved to SLSK_DOWNLOAD_DIR (set at login time).
+        During transfer the file has a .part suffix; it is renamed to the
+        final name only on successful completion.
         """
         assert self._client is not None
 
@@ -408,13 +411,27 @@ class SoulseekWrapper:
                 transfer: Transfer = await self._client.transfers.download(
                     username, remote_path
                 )
-            # aioslsk sets transfer.local_path when the download starts;
-            # read it back so we report the real path, not a guess.
-            local_path = getattr(transfer, 'local_path', None)
+
+            # Build the final path and set .part path on the transfer so
+            # aioslsk writes to the .part file directly.
+            filename = remote_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+            dl_dir = Path(os.environ.get("SLSK_DOWNLOAD_DIR", "./downloads"))
+            dl_dir.mkdir(parents=True, exist_ok=True)
+            final_path = dl_dir / filename
+            # Resolve collision on the final name
+            counter = 1
+            stem, suffix = final_path.stem, final_path.suffix
+            while final_path.exists() or final_path.with_suffix(suffix + ".part").exists():
+                final_path = dl_dir / f"{stem}_{counter}{suffix}"
+                counter += 1
+            part_path = final_path.with_suffix(suffix + ".part")
+            transfer.local_path = str(part_path)
+
             filesize = transfer.filesize if hasattr(transfer, 'filesize') else None
             self._downloads[file_id] = {
                 "transfer": transfer,
-                "local_path": local_path,
+                "local_path": str(final_path),
+                "part_path": str(part_path),
                 "filesize": filesize,
                 "finished_at": None,
                 "session_id": self._session_id,
@@ -424,13 +441,13 @@ class SoulseekWrapper:
             asyncio.get_event_loop().create_task(
                 self._watch_transfer(file_id)
             )
-            return True, "Download started", local_path, filesize
+            return True, "Download started", str(final_path), filesize
         except Exception as exc:
             self._download_sem.release()
             return False, f"Download failed: {exc}", None, None
 
     async def _watch_transfer(self, file_id: str) -> None:
-        """Wait for a transfer to finish, then release the semaphore and mark time."""
+        """Wait for a transfer to finish, rename .part → final on success."""
         entry = self._downloads.get(file_id)
         if not entry:
             return
@@ -441,6 +458,13 @@ class SoulseekWrapper:
                 if state in ("finished", "failed", "cancelled"):
                     break
                 await asyncio.sleep(1)
+            # Rename .part → final on success
+            if state == "finished":
+                part = Path(entry["part_path"])
+                final = Path(entry["local_path"])
+                if part.exists():
+                    part.rename(final)
+                    logger.info("Renamed %s → %s", part.name, final.name)
         finally:
             if self._download_sem:
                 self._download_sem.release()
