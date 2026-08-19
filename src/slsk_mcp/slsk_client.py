@@ -9,10 +9,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from collections import deque
+
 from aioslsk.client import SoulSeekClient
 from aioslsk.settings import Settings, CredentialsSettings, ListeningConnectionErrorMode
 from aioslsk.search.model import SearchRequest as SlskSearchRequest
 from aioslsk.transfer.model import Transfer
+from aioslsk.commands import PrivateMessageCommand
+from aioslsk.events import PrivateMessageEvent
 
 from .models import (
     SearchResultItem,
@@ -21,6 +25,11 @@ from .models import (
 )
 
 logger = logging.getLogger("slsk_mcp")
+
+
+class ChatNotAllowed(Exception):
+    """Raised when send_chat() targets a user we have no transfer with."""
+
 
 # aioslsk FileData attribute keys
 ATTR_AUDIO_QUALITY = 0
@@ -136,6 +145,10 @@ class SoulseekWrapper:
         _max_search = int(os.environ.get("SLSK_MAX_CONCURRENT_SEARCH", "4"))
         self._search_sem = asyncio.Semaphore(_max_search)
 
+        # Inbound private-message buffer (for anti-leech chat gates etc.)
+        _msg_max = int(os.environ.get("SLSK_MESSAGE_BUFFER", "200"))
+        self._messages: deque = deque(maxlen=_msg_max)
+
     # ── Properties ───────────────────────────────────────────────────────
 
     @property
@@ -196,6 +209,11 @@ class SoulseekWrapper:
         try:
             await self._client.start()
             await self._client.login()
+            # Listen for inbound private messages so tools can read/respond
+            # (e.g. anti-leech bots that gate downloads behind a chat reply).
+            self._client.events.register(
+                PrivateMessageEvent, self._on_private_message
+            )
         except Exception as exc:
             logger.error("Login failed: %s", exc)
             try:
@@ -574,6 +592,100 @@ class SoulseekWrapper:
             return {"status": "cancelled", "received_bytes": received}
         except Exception:
             return {"status": "not_found", "received_bytes": received}
+
+    # ── Private chat ──────────────────────────────────────────────────────
+
+    def _peer_usernames(self) -> set:
+        """Usernames we hold a transfer record for in the current session.
+
+        Finished records age out via _cleanup_finished()/_FINISHED_TTL, so this
+        set narrows back down on its own once transfers are done.
+        """
+        self._cleanup_finished()
+        peers = set()
+        for file_id, entry in self._downloads.items():
+            if entry.get("session_id") != self._session_id:
+                continue
+            try:
+                username, _ = _parse_id(file_id)
+            except (ValueError, IndexError):
+                continue
+            peers.add(username)
+        return peers
+
+    def has_transfer_with(self, username: str) -> bool:
+        """True if `username` has a transfer record this session.
+
+        Exact match by design — case-folding or prefix matching would widen the
+        set of users the agent is allowed to message.
+        """
+        return username in self._peer_usernames()
+
+    async def _on_private_message(self, event: PrivateMessageEvent) -> None:
+        """Buffer inbound private messages for later retrieval."""
+        try:
+            cm = event.message
+            # NOTE: aioslsk's is_server_message() is just a `user.name ==
+            # 'server'` check, so a peer claiming that name would also match.
+            # We record it as an explicit field so a reader never has to infer
+            # trust from the username string embedded in free text.
+            try:
+                is_server = bool(cm.is_server_message())
+            except Exception:
+                is_server = False
+            self._messages.append({
+                "id": getattr(cm, "id", None),
+                "user": cm.user.name,
+                "message": cm.message,
+                "timestamp": getattr(cm, "timestamp", None),
+                "is_direct": getattr(cm, "is_direct", None),
+                "is_server_message": is_server,
+                "is_admin": bool(getattr(cm, "is_admin", False)),
+            })
+        except Exception as exc:  # never let a listener error break the client
+            logger.warning("private-message listener error: %s", exc)
+
+    async def send_chat(self, username: str, message: str) -> Dict[str, Any]:
+        """Send a private chat message to a Soulseek user.
+
+        Restricted to users we hold a transfer record for this session. This is
+        the authoritative check — it lives here so no other caller can bypass
+        it — and raises ChatNotAllowed otherwise.
+        """
+        assert self._client is not None
+        if not self.has_transfer_with(username):
+            raise ChatNotAllowed(
+                f"Refusing to message '{username}': no active, queued, or recent "
+                f"transfer with that user this session."
+            )
+        await self._client.execute(PrivateMessageCommand(username, message))
+        logger.info("Sent private message to %s (%d chars)", username, len(message))
+        return {"status": "sent", "username": username, "message": message}
+
+    def get_messages(self, clear: bool = False) -> List[Dict[str, Any]]:
+        """Return buffered inbound private messages (newest last).
+
+        Non-destructive by default so the buffer stays inspectable after the
+        agent has read it; call clear_messages() to drain it explicitly.
+
+        `known_peer` is resolved at read time (not receive time) so it reflects
+        the transfer set as it stands now.
+        """
+        peers = self._peer_usernames()
+        out = []
+        for m in self._messages:
+            entry = dict(m)
+            entry["known_peer"] = entry.get("user") in peers
+            out.append(entry)
+        if clear:
+            self._messages.clear()
+        return out
+
+    def clear_messages(self) -> int:
+        """Drop all buffered inbound messages. Returns the number cleared."""
+        n = len(self._messages)
+        self._messages.clear()
+        return n
 
     # ── Peer Status ───────────────────────────────────────────────────────
 
