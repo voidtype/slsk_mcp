@@ -118,3 +118,14 @@ class ErrorResponse(BaseModel):
     status: str = "error"
     code: str  # not_authenticated | network_error | peer_timeout | invalid_params
     message: str
+
+
+# ── Shares ───────────────────────────────────────────────────────────────────
+
+class RescanSharesResponse(BaseModel):
+    status: str  # "ok" | "error"
+    message: str
+    shared_files: int
+    shared_folders: int
+    share_dirs: List[str]
+

@@ -46,7 +46,9 @@ Soulseek credentials are **never hardcoded**. Two options, checked in order:
 | `SLSK_OBFUSCATED_PORT` | aioslsk default | Obfuscated port |
 | `SLSK_SEARCH_TIMEOUT` | `7` | Seconds to wait for search results |
 | `SLSK_DOWNLOAD_DIR` | `./downloads` | Default download output directory |
+| `SLSK_SHARE_DIR` | — | Directory (or comma/semicolon-delimited list) to share on Soulseek |
 | `SLSK_MAX_CONCURRENT_DL` | `3` | Parallel download limit |
+
  
 ---
  
@@ -236,5 +238,5 @@ Passive fallback: If listening port bind fails (firewall/NAT), retry with Listen
 Search wait floor: Enforce minimum 7s wait for results — SLSK network is slow; shorter waits return empty.
 Progress tracking: Store (username, remote_path) → progress_dict in memory. Clean up finished entries after 60s.
 File attributes: Map aioslsk FileData.attributes keys: 0=audio_quality, 1=duration_sec, 4=sample_rate, 5=bit_depth.
-No shares required: Share scanning is optional. The MCP is primarily a consumer, not a sharer. Can be added later.
+Shares support: Share scanning is configurable via SLSK_SHARE_DIR / SLSK_SHARE_DIRS. Scanned on startup and re-scannable via rescan_shares tool. Files and folders are announced to Soulseek to satisfy anti-leech peer requirements.
 Concurrency: Semaphore-limited parallel downloads (default 3). Searches limited to 4 concurrent.

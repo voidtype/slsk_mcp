@@ -16,7 +16,13 @@ Soulseek MCP server for Claude Desktop / Claude Code.
 ## MCP tools for the AI
 
 ### `get_config`
-Returns runtime settings (download directory, listen port, concurrency limits, username). Call this when you need to know where files are saved or what the current configuration is. No arguments required. Does not require a connection.
+Returns runtime settings (download directory, share directories, listen port, concurrency limits, username). Call this when you need to know where files are saved, what directories are shared, or what the current configuration is. No arguments required. Does not require an active connection.
+
+### `rescan_shares`
+Re-scans all directories configured by `SLSK_SHARE_DIR` / `SLSK_SHARE_DIRS`, indexes file metadata, and broadcasts updated share counts to the Soulseek network. Call this if new files were added to shared directories during the session.
+
+### File sharing (`SLSK_SHARE_DIR`)
+Configuring `SLSK_SHARE_DIR` shares local audio folders on the Soulseek network. This fulfills community sharing norms and prevents bans from anti-leech peers. Multiple directories can be separated by commas or semicolons.
 
 ### Private chat (`send_chat`, `get_messages`, `clear_messages`)
 
@@ -33,4 +39,9 @@ Downloads are written as `filename.flac.part` during transfer. The `.part` suffi
 
 ## Testing
 
-- No test suite currently; verify by restarting Claude Desktop and calling `connection_health`.
+Run the test suite using pytest:
+
+```bash
+uv run pytest
+```
+

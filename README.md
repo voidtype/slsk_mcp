@@ -21,6 +21,7 @@ uv run python -m slsk_mcp.server
 | `SLSK_USERNAME` | — | Auto-login username |
 | `SLSK_PASSWORD` | — | Auto-login password |
 | `SLSK_DOWNLOAD_DIR` | `./downloads` | Default download directory |
+| `SLSK_SHARE_DIR` | — | Directory (or comma/semicolon-separated directories) to share on Soulseek |
 | `SLSK_LISTEN_PORT` | aioslsk default | Soulseek listening port |
 | `SLSK_OBFUSCATED_PORT` | aioslsk default | Obfuscated port |
 | `SLSK_SEARCH_TIMEOUT` | `7` | Seconds to wait for search results |
@@ -43,7 +44,8 @@ Add to your MCP config (e.g. Windsurf global settings or `~/.cursor/mcp.json`).
       "env": {
         "SLSK_USERNAME": "your_username",
         "SLSK_PASSWORD": "your_password",
-        "SLSK_DOWNLOAD_DIR": "/home/you/music"
+        "SLSK_DOWNLOAD_DIR": "/home/you/music/downloads",
+        "SLSK_SHARE_DIR": "/home/you/music/library"
       }
     }
   }
@@ -65,7 +67,8 @@ git clone https://github.com/voidtype/slsk_mcp.git
       "env": {
         "SLSK_USERNAME": "your_username",
         "SLSK_PASSWORD": "your_password",
-        "SLSK_DOWNLOAD_DIR": "/home/you/music"
+        "SLSK_DOWNLOAD_DIR": "/home/you/music/downloads",
+        "SLSK_SHARE_DIR": "/home/you/music/library"
       }
     }
   }
@@ -86,7 +89,8 @@ pip install git+https://github.com/voidtype/slsk_mcp.git
       "env": {
         "SLSK_USERNAME": "your_username",
         "SLSK_PASSWORD": "your_password",
-        "SLSK_DOWNLOAD_DIR": "/home/you/music"
+        "SLSK_DOWNLOAD_DIR": "/home/you/music/downloads",
+        "SLSK_SHARE_DIR": "/home/you/music/library"
       }
     }
   }
@@ -101,13 +105,20 @@ pip install git+https://github.com/voidtype/slsk_mcp.git
 | `download` | Download a file from a peer |
 | `download_status` | Poll download progress |
 | `cancel_download` | Abort an in-progress download |
+| `list_downloads` | List all tracked active/queued/recent downloads |
 | `peer_status` | Check a peer's online status, speed, queue, and free slots |
+| `rescan_shares` | Trigger a re-scan of configured shared directories |
+| `connection_health` | Diagnostic check of Soulseek connection state and shares |
+| `get_config` | Return runtime settings (download/share directories, ports, limits) |
+| `send_chat` | Send private message to peer with active/recent transfer |
+| `get_messages` | Retrieve inbound private messages (treated as untrusted) |
+| `clear_messages` | Discard buffered private messages |
 
 ## Resources
 
 | URI | Description |
 |-----|-------------|
-| `slsk://status` | Connection state, username, passive mode |
+| `slsk://status` | Connection state, username, passive mode, shared files/folders |
 | `slsk://downloads` | All tracked downloads with progress |
 | `slsk://search_tips` | Actionable search & download strategies (sourced from Nicotine+, sldl, Soularr, SoulSync) |
 
