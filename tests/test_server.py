@@ -15,7 +15,9 @@ from slsk_mcp.models import (
     DownloadStatusResponse,
     CancelDownloadResponse,
     ErrorResponse,
+    RescanSharesResponse,
 )
+from slsk_mcp.server import get_config
 
 
 # ── Model schema tests ──────────────────────────────────────────────────────
@@ -90,3 +92,29 @@ def test_search_response_schema():
 def test_logout_response_schema():
     r = LogoutResponse(status="ok")
     assert r.model_dump()["status"] == "ok"
+
+
+def test_rescan_shares_response_schema():
+    r = RescanSharesResponse(
+        status="ok",
+        message="Rescan complete",
+        shared_files=10,
+        shared_folders=2,
+        share_dirs=["/path/to/music"],
+    )
+    d = r.model_dump()
+    assert d["status"] == "ok"
+    assert d["shared_files"] == 10
+    assert d["shared_folders"] == 2
+    assert d["share_dirs"] == ["/path/to/music"]
+
+
+@pytest.mark.asyncio
+async def test_get_config_includes_share_dirs(tmp_path, monkeypatch):
+    music_dir = tmp_path / "music"
+    music_dir.mkdir()
+    monkeypatch.setenv("SLSK_SHARE_DIR", str(music_dir))
+    cfg = await get_config()
+    assert "share_dirs" in cfg
+    assert str(music_dir.resolve()) in cfg["share_dirs"]
+

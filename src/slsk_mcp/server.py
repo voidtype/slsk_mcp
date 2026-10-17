@@ -18,8 +18,9 @@ from .models import (
     DownloadStatusResponse,
     CancelDownloadResponse,
     PeerStatusResponse,
+    RescanSharesResponse,
 )
-from .slsk_client import SoulseekWrapper, ChatNotAllowed
+from .slsk_client import SoulseekWrapper, ChatNotAllowed, _parse_share_dirs
 
 logger = logging.getLogger("slsk_mcp")
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
@@ -225,7 +226,8 @@ async def connection_health() -> dict:
 
     Call this at the start of every session and after any suspected restart.
     Returns: connected, passive_mode, session_id, listening_port, p2p_reachable,
-    session_uptime_secs, active_downloads, and a note if something needs attention.
+    session_uptime_secs, active_downloads, shared_files, shared_folders, share_dirs,
+    and a note if something needs attention.
 
     Key fields:
     - session_id: increments on each login. If it changed since your last check,
@@ -246,16 +248,52 @@ async def connection_health() -> dict:
 async def get_config() -> dict:
     """Return the MCP's runtime configuration (no secrets).
 
-    Use this to check where files are being downloaded, which ports are
-    configured, concurrency limits, and the connected username.
+    Use this to check where files are being downloaded, shared directories,
+    which ports are configured, concurrency limits, and the connected username.
     """
+    configured_shares = (
+        _W.share_dirs
+        if _W.connected
+        else _parse_share_dirs(
+            os.environ.get("SLSK_SHARE_DIR") or os.environ.get("SLSK_SHARE_DIRS")
+        )
+    )
     return {
         "username": os.environ.get("SLSK_USERNAME", ""),
         "download_dir": os.environ.get("SLSK_DOWNLOAD_DIR", "./downloads"),
+        "share_dirs": configured_shares,
         "listen_port": os.environ.get("SLSK_LISTEN_PORT", "(default 60000)"),
         "obfuscated_port": os.environ.get("SLSK_OBFUSCATED_PORT", "(default 60001)"),
         "max_concurrent_downloads": int(os.environ.get("SLSK_MAX_CONCURRENT_DL", "2")),
     }
+
+
+@mcp.tool()
+async def rescan_shares() -> dict:
+    """Trigger a re-scan of configured shared directories.
+
+    Scans the directories specified by SLSK_SHARE_DIR / SLSK_SHARE_DIRS,
+    updates file counts and metadata, and announces updated share counts
+    to the Soulseek network.
+    """
+    try:
+        await _connect()
+    except RuntimeError as exc:
+        return ErrorResponse(code="not_authenticated", message=str(exc)).model_dump()
+
+    try:
+        ok, msg, files, folders = await _with_retry(lambda: _W.rescan_shares())
+        if not ok:
+            return ErrorResponse(code="network_error", message=msg).model_dump()
+        return RescanSharesResponse(
+            status="ok",
+            message=msg,
+            shared_files=files,
+            shared_folders=folders,
+            share_dirs=_W.share_dirs,
+        ).model_dump()
+    except Exception as exc:
+        return ErrorResponse(code="network_error", message=str(exc)).model_dump()
 
 
 @mcp.tool()

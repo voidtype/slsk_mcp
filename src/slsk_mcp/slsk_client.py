@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -12,7 +13,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from collections import deque
 
 from aioslsk.client import SoulSeekClient
-from aioslsk.settings import Settings, CredentialsSettings, ListeningConnectionErrorMode
+from aioslsk.settings import (
+    Settings,
+    CredentialsSettings,
+    ListeningConnectionErrorMode,
+    SharedDirectorySettingEntry,
+)
 from aioslsk.search.model import SearchRequest as SlskSearchRequest
 from aioslsk.transfer.model import Transfer
 from aioslsk.commands import PrivateMessageCommand
@@ -112,6 +118,33 @@ def _extract_attrs(attributes: Any) -> Dict[str, Optional[int]]:
     return result
 
 
+def _parse_share_dirs(val: Optional[str]) -> List[str]:
+    """Parse delimited directory paths from env var or config string.
+
+    Supports comma or semicolon separation, expands user '~' and env vars.
+    Returns list of verified absolute directory paths. Non-existent directories
+    are skipped with a warning.
+    """
+    if not val or not val.strip():
+        return []
+
+    raw_parts = [p.strip() for p in re.split(r"[,;]+", val) if p.strip()]
+    results: List[str] = []
+    for raw in raw_parts:
+        expanded = os.path.expandvars(os.path.expanduser(raw))
+        p = Path(expanded).resolve()
+        if not p.exists():
+            logger.warning("Shared directory does not exist: %s", raw)
+            continue
+        if not p.is_dir():
+            logger.warning("Shared directory is not a directory: %s", raw)
+            continue
+        resolved_str = str(p)
+        if resolved_str not in results:
+            results.append(resolved_str)
+    return results
+
+
 class SoulseekWrapper:
     """Thin wrapper around aioslsk providing the operations the MCP server needs."""
 
@@ -149,6 +182,10 @@ class SoulseekWrapper:
         _msg_max = int(os.environ.get("SLSK_MESSAGE_BUFFER", "200"))
         self._messages: deque = deque(maxlen=_msg_max)
 
+        # Configured shared directories & scan mutex
+        self._share_dirs: List[str] = []
+        self._scan_lock = asyncio.Lock()
+
     # ── Properties ───────────────────────────────────────────────────────
 
     @property
@@ -163,18 +200,32 @@ class SoulseekWrapper:
     def username(self) -> Optional[str]:
         return self._username
 
+    @property
+    def share_dirs(self) -> List[str]:
+        return list(self._share_dirs)
+
     # ── Login / Logout ───────────────────────────────────────────────────
 
-    async def login(self, username: str, password: str) -> Tuple[bool, str, bool]:
+    async def login(
+        self,
+        username: str,
+        password: str,
+        share_dirs: Optional[List[str]] = None,
+    ) -> Tuple[bool, str, bool]:
         """Connect and authenticate. Returns (success, message, passive_mode).
 
         Thread-safe: uses _conn_lock so concurrent callers queue instead of
         stomping each other's connections.
         """
         async with self._conn_lock:
-            return await self._login_inner(username, password)
+            return await self._login_inner(username, password, share_dirs=share_dirs)
 
-    async def _login_inner(self, username: str, password: str) -> Tuple[bool, str, bool]:
+    async def _login_inner(
+        self,
+        username: str,
+        password: str,
+        share_dirs: Optional[List[str]] = None,
+    ) -> Tuple[bool, str, bool]:
         # If already connected with same creds, return immediately
         if self._connected and self._username == username:
             logger.info("Already connected as %s, skipping re-login", username)
@@ -203,6 +254,25 @@ class SoulseekWrapper:
 
         download_dir = os.environ.get("SLSK_DOWNLOAD_DIR", "./downloads")
         settings.shares.download = download_dir
+
+        if share_dirs is not None:
+            self._share_dirs = [
+                str(Path(os.path.expandvars(os.path.expanduser(p))).resolve())
+                for p in share_dirs
+                if Path(os.path.expandvars(os.path.expanduser(p))).resolve().is_dir()
+            ]
+        else:
+            share_env = os.environ.get("SLSK_SHARE_DIR") or os.environ.get("SLSK_SHARE_DIRS")
+            self._share_dirs = _parse_share_dirs(share_env)
+
+        if self._share_dirs:
+            settings.shares.directories = [
+                SharedDirectorySettingEntry(path=p) for p in self._share_dirs
+            ]
+            settings.shares.scan_on_start = True
+            logger.info("Configured %d shared directory(ies): %s", len(self._share_dirs), self._share_dirs)
+        else:
+            settings.shares.scan_on_start = False
 
         self._client = SoulSeekClient(settings)
 
@@ -289,6 +359,7 @@ class SoulseekWrapper:
         self._connected = False
         self._username = None
         self._password = None
+        self._share_dirs = []
 
     async def reconnect(self) -> bool:
         """Attempt to re-establish the session from stored credentials.
@@ -728,6 +799,13 @@ class SoulseekWrapper:
             if e.get("session_id") == self._session_id and not e.get("finished_at")
         )
 
+        shared_folders, shared_files = 0, 0
+        if self._client and self._connected:
+            try:
+                shared_folders, shared_files = self._client.shares.get_stats()
+            except Exception:
+                pass
+
         return {
             "connected": self._connected,
             "username": self._username,
@@ -737,6 +815,9 @@ class SoulseekWrapper:
             "listening_port": listening_port,
             "active_downloads": active_downloads,
             "max_concurrent_downloads": self._max_concurrent_dl,
+            "shared_files": shared_files,
+            "shared_folders": shared_folders,
+            "share_dirs": list(self._share_dirs),
             "p2p_reachable": not self._passive_mode and listening_port is not None,
             "note": (
                 "passive_mode=true means no listening port is bound. "
@@ -744,6 +825,28 @@ class SoulseekWrapper:
                 "Configure SLSK_LISTEN_PORT and forward that port on your router."
             ) if self._passive_mode else None,
         }
+
+    async def rescan_shares(self) -> Tuple[bool, str, int, int]:
+        """Trigger a re-scan of configured shared directories.
+
+        Returns (success, message, shared_files, shared_folders).
+        """
+        if not self._client or not self._connected:
+            return False, "Not connected to Soulseek", 0, 0
+
+        if not self._share_dirs:
+            return True, "No shared directories configured (set SLSK_SHARE_DIR)", 0, 0
+
+        async with self._scan_lock:
+            try:
+                self._client.shares.load_from_settings()
+                await self._client.shares.scan()
+                folders, files = self._client.shares.get_stats()
+                logger.info("Shares rescan complete: %d files across %d folders", files, folders)
+                return True, f"Shares rescan complete: {files} files across {folders} folders shared", files, folders
+            except Exception as exc:
+                logger.error("Shares rescan failed: %s", exc)
+                return False, f"Shares rescan failed: {exc}", 0, 0
 
     def all_downloads(self) -> List[Dict[str, Any]]:
         self._cleanup_finished()

@@ -1,0 +1,27 @@
+# Python byte-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.venv/
+env/
+venv/
+ENV/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Soulseek partial downloads
+*.part
+
+# Local environment / secrets
+.env
